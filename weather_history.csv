@@ -1,0 +1,13 @@
+Date,Station,Source,Forecast_Min_Temp,Forecast_Max_Temp,Forecast_Rain_Prob,Forecast_Rain_Min_mm,Forecast_Rain_Max_mm,Actual_Min_Temp,Actual_Max_Temp,Actual_Rain_mm
+2026-03-01,West Terrace,Open-Meteo (ECMWF),,,,,,,,
+2026-03-01,West Terrace,Open-Meteo (GFS),20.1,25.1,87.0,5.7,5.7,,,
+2026-03-01,West Terrace,Open-Meteo (BOM),,,,,,,,
+2026-03-01,Airport,Open-Meteo (ECMWF),,,,,,,,
+2026-03-01,Airport,Open-Meteo (GFS),20.9,23.7,87.0,4.9,4.9,,,
+2026-03-01,Airport,Open-Meteo (BOM),,,,,,,,
+2026-03-01,Kent Town,Open-Meteo (ECMWF),,,,,,,,
+2026-03-01,Kent Town,Open-Meteo (GFS),20.1,25.1,87.0,5.7,5.7,,,
+2026-03-01,Kent Town,Open-Meteo (BOM),,,,,,,,
+2026-03-01,Mt Lofty,Open-Meteo (ECMWF),,,,,,,,
+2026-03-01,Mt Lofty,Open-Meteo (GFS),15.9,21.9,94.0,9.2,9.2,,,
+2026-03-01,Mt Lofty,Open-Meteo (BOM),,,,,,,,
