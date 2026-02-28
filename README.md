@@ -2,7 +2,7 @@
 
 An automated, 100% free data pipeline and interactive dashboard designed to track, grade, and visualize the accuracy of various weather forecasting models for Adelaide, South Australia. 
 
-**Live Dashboard:** [Insert your Streamlit App URL here]
+**Live Dashboard:** (https://adelaide-weather-auditor.streamlit.app/)
 
 
 
