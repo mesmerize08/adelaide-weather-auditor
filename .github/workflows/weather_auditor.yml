@@ -2,9 +2,8 @@ name: Weather Accuracy Auditor
 
 on:
   schedule:
-    # 22:35 UTC and 23:35 UTC covers 9:05 AM in Adelaide regardless of DST (ACDT/ACST)
     - cron: '35 22,23 * * *'
-  workflow_dispatch: # Allows manual triggering for testing
+  workflow_dispatch: 
 
 permissions:
   contents: write
@@ -27,9 +26,6 @@ jobs:
           pip install requests beautifulsoup4 pandas pytz
 
       - name: Run Weather Fetcher
-        env:
-          WEATHERAPI_KEY: ${{ secrets.WEATHERAPI_KEY }}
-          WILLYWEATHER_KEY: ${{ secrets.WILLYWEATHER_KEY }}
         run: python weather_fetcher.py
 
       - name: Commit and Push Changes
