@@ -2,9 +2,9 @@ Date,Station,Source,Forecast_Min_Temp,Forecast_Max_Temp,Forecast_Rain_Prob,Forec
 2026-03-01,West Terrace,Open-Meteo (ECMWF),,,,,,18.7,25.6,0.0
 2026-03-01,West Terrace,Open-Meteo (GFS),20.1,25.1,87.0,5.7,5.7,18.7,25.6,0.0
 2026-03-01,West Terrace,Open-Meteo (BOM),,,,,,18.7,25.6,0.0
-2026-03-01,Airport,Open-Meteo (ECMWF),,,,,,,,
-2026-03-01,Airport,Open-Meteo (GFS),20.9,23.7,87.0,4.9,4.9,,,
-2026-03-01,Airport,Open-Meteo (BOM),,,,,,,,
+2026-03-01,Airport,Open-Meteo (ECMWF),,,,,,18.9,23.3,0.0
+2026-03-01,Airport,Open-Meteo (GFS),20.9,23.7,87.0,4.9,4.9,18.9,23.3,0.0
+2026-03-01,Airport,Open-Meteo (BOM),,,,,,18.9,23.3,0.0
 2026-03-01,Mt Lofty,Open-Meteo (ECMWF),,,,,,14.0,20.8,0.0
 2026-03-01,Mt Lofty,Open-Meteo (GFS),15.9,21.9,94.0,9.2,9.2,14.0,20.8,0.0
 2026-03-01,Mt Lofty,Open-Meteo (BOM),,,,,,14.0,20.8,0.0
