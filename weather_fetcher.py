@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import requests
 import re
 import pandas as pd
@@ -7,7 +8,7 @@ import pytz
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
-# --- 1. Date Tracking (Removed fragile 9 AM rule) ---
+# --- 1. Date Tracking ---
 adelaide_tz = pytz.timezone('Australia/Adelaide')
 now = datetime.now(adelaide_tz)
 
@@ -94,15 +95,19 @@ else:
 # --- 3. Update Yesterday's Actuals (BOM) ---
 def fetch_bom_actuals(bom_id):
     url = f"http://reg.bom.gov.au/fwo/IDS60901/IDS60901.{bom_id}.json"
-    # Upgraded headers to prevent BOM from blocking the GitHub Actions IP
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json',
         'Referer': 'http://www.bom.gov.au/'
     }
     try:
-        res = requests.get(url, headers=headers, timeout=10).json()
-        data = res['observations']['data']
+        res = requests.get(url, headers=headers, timeout=10)
+        
+        if res.status_code != 200:
+            print(f"BOM Fetch Error for {bom_id}: HTTP {res.status_code} - Firewall block likely.")
+            return None
+            
+        data = res.json()['observations']['data']
         max_t = max([x['air_temp'] for x in data[:48]])
         min_t = min([x['air_temp'] for x in data[:48]])
         rain = data[0]['rain_trace']
@@ -118,6 +123,10 @@ for name, coords in STATIONS.items():
         df_history.loc[mask, 'Actual_Min_Temp'] = actuals['Actual_Min_Temp']
         df_history.loc[mask, 'Actual_Max_Temp'] = actuals['Actual_Max_Temp']
         df_history.loc[mask, 'Actual_Rain_mm'] = actuals['Actual_Rain_mm']
+        print(f"Successfully fetched BOM actuals for {name}.")
+    
+    # CRITICAL: 3 second delay to prevent BOM firewall rate-limiting
+    time.sleep(3)
 
 # --- 4. Save and Append ---
 if not already_ran_today:
