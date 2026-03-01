@@ -7,13 +7,9 @@ import pytz
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
-# --- 1. Enforce 9 AM Rule (ACDT/ACST) ---
+# --- 1. Date Tracking (Removed fragile 9 AM rule) ---
 adelaide_tz = pytz.timezone('Australia/Adelaide')
 now = datetime.now(adelaide_tz)
-
-if now.hour != 9:
-    print(f"Current Adelaide time is {now.strftime('%H:%M')}. Exiting to strictly enforce the 9 AM rule.")
-    sys.exit(0)
 
 today_str = now.strftime('%Y-%m-%d')
 yesterday_str = (now - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -26,7 +22,6 @@ STATIONS = {
     'Mt Lofty': {'lat': -34.9800, 'lon': 138.7083, 'bom_id': 94693}
 }
 
-# Ensure CSV exists
 if not os.path.exists(CSV_FILE):
     df = pd.DataFrame(columns=[
         'Date', 'Station', 'Source', 'Forecast_Min_Temp', 'Forecast_Max_Temp', 
@@ -36,6 +31,9 @@ if not os.path.exists(CSV_FILE):
     df.to_csv(CSV_FILE, index=False)
 
 df_history = pd.read_csv(CSV_FILE)
+
+# Check to prevent duplicate forecast entries if GitHub runs this twice
+already_ran_today = today_str in df_history['Date'].values
 new_records = []
 
 # --- 2. Fetch Forecasts (Today) ---
@@ -60,12 +58,10 @@ def scrape_weatherzone():
     try:
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
-        
         rain_text = soup.find(string=re.compile(r'\d+.*mm')).strip()
         matches = re.findall(r'\d+', rain_text)
         rain_min = float(matches[0])
         rain_max = float(matches[1]) if len(matches) > 1 else rain_min
-        
         return {
             'Min_Temp': float(soup.find(class_='min-temp').text.strip('°')),
             'Max_Temp': float(soup.find(class_='max-temp').text.strip('°')),
@@ -77,38 +73,35 @@ def scrape_weatherzone():
         print(f"Weatherzone Scrape Error: {e}")
         return None
 
-# The 3 different free models we are pulling from Open-Meteo
-open_meteo_models = {
-    'Open-Meteo (ECMWF)': 'ecmwf_ifs04',
-    'Open-Meteo (GFS)': 'gfs_seamless',
-    'Open-Meteo (BOM)': 'bom_access_global'
-}
-
-wz_data = scrape_weatherzone()
-
-for name, coords in STATIONS.items():
-    # 1. Fetch the 3 Open-Meteo Models
-    for source_name, model_code in open_meteo_models.items():
-        om_data = fetch_open_meteo(coords['lat'], coords['lon'], model_code)
-        if om_data:
-            new_records.append({'Date': today_str, 'Station': name, 'Source': source_name, 
-                                'Forecast_Min_Temp': om_data['Min_Temp'], 'Forecast_Max_Temp': om_data['Max_Temp'],
-                                'Forecast_Rain_Prob': om_data['Rain_Prob'], 'Forecast_Rain_Min_mm': om_data['Rain_Min'], 
-                                'Forecast_Rain_Max_mm': om_data['Rain_Max']})
+if not already_ran_today:
+    open_meteo_models = {
+        'Open-Meteo (ECMWF)': 'ecmwf_ifs04',
+        'Open-Meteo (GFS)': 'gfs_seamless',
+        'Open-Meteo (BOM)': 'bom_access_global'
+    }
+    wz_data = scrape_weatherzone()
     
-    # 2. Fetch Weatherzone
-    if wz_data:
-        new_records.append({'Date': today_str, 'Station': name, 'Source': 'Weatherzone', 
-                            'Forecast_Min_Temp': wz_data['Min_Temp'], 'Forecast_Max_Temp': wz_data['Max_Temp'],
-                            'Forecast_Rain_Prob': wz_data['Rain_Prob'], 'Forecast_Rain_Min_mm': wz_data['Rain_Min'], 
-                            'Forecast_Rain_Max_mm': wz_data['Rain_Max']})
+    for name, coords in STATIONS.items():
+        for source_name, model_code in open_meteo_models.items():
+            om_data = fetch_open_meteo(coords['lat'], coords['lon'], model_code)
+            if om_data:
+                new_records.append({'Date': today_str, 'Station': name, 'Source': source_name, **om_data})
+        if wz_data:
+            new_records.append({'Date': today_str, 'Station': name, 'Source': 'Weatherzone', **wz_data})
+else:
+    print(f"Forecasts for {today_str} already recorded. Checking Actuals only.")
 
 # --- 3. Update Yesterday's Actuals (BOM) ---
 def fetch_bom_actuals(bom_id):
     url = f"http://reg.bom.gov.au/fwo/IDS60901/IDS60901.{bom_id}.json"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    # Upgraded headers to prevent BOM from blocking the GitHub Actions IP
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'http://www.bom.gov.au/'
+    }
     try:
-        res = requests.get(url, headers=headers).json()
+        res = requests.get(url, headers=headers, timeout=10).json()
         data = res['observations']['data']
         max_t = max([x['air_temp'] for x in data[:48]])
         min_t = min([x['air_temp'] for x in data[:48]])
@@ -127,7 +120,11 @@ for name, coords in STATIONS.items():
         df_history.loc[mask, 'Actual_Rain_mm'] = actuals['Actual_Rain_mm']
 
 # --- 4. Save and Append ---
-df_new = pd.DataFrame(new_records)
-df_final = pd.concat([df_history, df_new], ignore_index=True)
+if not already_ran_today:
+    df_new = pd.DataFrame(new_records)
+    df_final = pd.concat([df_history, df_new], ignore_index=True)
+else:
+    df_final = df_history
+
 df_final.to_csv(CSV_FILE, index=False)
-print("Weather data successfully updated from entirely free sources.")
+print("Pipeline execution complete.")
