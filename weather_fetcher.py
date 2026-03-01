@@ -16,10 +16,10 @@ today_str = now.strftime('%Y-%m-%d')
 yesterday_str = (now - timedelta(days=1)).strftime('%Y-%m-%d')
 CSV_FILE = 'weather_history.csv'
 
-# FINAL: Verified BOM Station IDs and Product Folders
+# FINAL: Verified BOM Station IDs (WMO Index) and Product Folders
 STATIONS = {
     'West Terrace': {'lat': -34.9285, 'lon': 138.5955, 'bom_id': '94648', 'prod_id': 'IDS60901'},
-    'Airport': {'lat': -34.9524, 'lon': 138.5196, 'bom_id': '94672', 'prod_id': 'IDS60801'},
+    'Airport': {'lat': -34.9524, 'lon': 138.5196, 'bom_id': '94146', 'prod_id': 'IDS60901'},
     'Mt Lofty': {'lat': -34.9800, 'lon': 138.7083, 'bom_id': '95678', 'prod_id': 'IDS60801'}
 }
 
