@@ -16,11 +16,12 @@ today_str = now.strftime('%Y-%m-%d')
 yesterday_str = (now - timedelta(days=1)).strftime('%Y-%m-%d')
 CSV_FILE = 'weather_history.csv'
 
+# FIXED: Accurate BOM Station IDs and Product Folders
 STATIONS = {
-    'West Terrace': {'lat': -34.9285, 'lon': 138.5955, 'bom_id': 94648},
-    'Airport': {'lat': -34.9524, 'lon': 138.5196, 'bom_id': 94672},
-    'Kent Town': {'lat': -34.9211, 'lon': 138.6216, 'bom_id': 94643},
-    'Mt Lofty': {'lat': -34.9800, 'lon': 138.7083, 'bom_id': 94693}
+    'West Terrace': {'lat': -34.9285, 'lon': 138.5955, 'bom_id': '94648', 'prod_id': 'IDS60901'},
+    'Airport': {'lat': -34.9524, 'lon': 138.5196, 'bom_id': '94672', 'prod_id': 'IDS60801'},
+    'Kent Town': {'lat': -34.9211, 'lon': 138.6216, 'bom_id': '94648', 'prod_id': 'IDS60901'}, # Grades using West Terrace actuals
+    'Mt Lofty': {'lat': -34.9800, 'lon': 138.7083, 'bom_id': '95678', 'prod_id': 'IDS60801'}
 }
 
 if not os.path.exists(CSV_FILE):
@@ -93,8 +94,8 @@ else:
     print(f"Forecasts for {today_str} already recorded. Checking Actuals only.")
 
 # --- 3. Update Yesterday's Actuals (BOM) ---
-def fetch_bom_actuals(bom_id):
-    url = f"http://reg.bom.gov.au/fwo/IDS60901/IDS60901.{bom_id}.json"
+def fetch_bom_actuals(bom_id, prod_id):
+    url = f"http://reg.bom.gov.au/fwo/{prod_id}/{prod_id}.{bom_id}.json"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json',
@@ -104,7 +105,7 @@ def fetch_bom_actuals(bom_id):
         res = requests.get(url, headers=headers, timeout=10)
         
         if res.status_code != 200:
-            print(f"BOM Fetch Error for {bom_id}: HTTP {res.status_code} - Firewall block likely.")
+            print(f"BOM Fetch Error for {bom_id}: HTTP {res.status_code} - URL Not Found or Blocked.")
             return None
             
         data = res.json()['observations']['data']
@@ -117,7 +118,7 @@ def fetch_bom_actuals(bom_id):
         return None
 
 for name, coords in STATIONS.items():
-    actuals = fetch_bom_actuals(coords['bom_id'])
+    actuals = fetch_bom_actuals(coords['bom_id'], coords['prod_id'])
     if actuals:
         mask = (df_history['Date'] == yesterday_str) & (df_history['Station'] == name)
         df_history.loc[mask, 'Actual_Min_Temp'] = actuals['Actual_Min_Temp']
@@ -125,7 +126,6 @@ for name, coords in STATIONS.items():
         df_history.loc[mask, 'Actual_Rain_mm'] = actuals['Actual_Rain_mm']
         print(f"Successfully fetched BOM actuals for {name}.")
     
-    # CRITICAL: 3 second delay to prevent BOM firewall rate-limiting
     time.sleep(3)
 
 # --- 4. Save and Append ---
