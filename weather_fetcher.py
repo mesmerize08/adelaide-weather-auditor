@@ -30,24 +30,31 @@ if not (510 <= time_in_minutes <= 600):  # 8:30 AM to 10:00 AM
 print(f"Running at Adelaide time: {now.strftime('%Y-%m-%d %H:%M %Z')}")
 
 # --- Station Configuration ---
-# BOM Station IDs verified against www.bom.gov.au/products/
-# Kent Town was CLOSED in July 2020 — replaced by West Terrace.
+# 4 stations across Adelaide metro area.
+# Each has:
+#   - lat/lon: for Open-Meteo API queries
+#   - bom_id/prod_id: for fetching BOM observation actuals (JSON feed)
+#   - bom_place: URL slug for scraping the BOM published forecast page
 STATIONS = {
     'West Terrace': {
         'lat': -34.9250, 'lon': 138.5870,
-        'bom_id': '94648', 'prod_id': 'IDS60901'
+        'bom_id': '94648', 'prod_id': 'IDS60901',
+        'bom_place': 'adelaide',
     },
     'Adelaide Airport': {
         'lat': -34.9524, 'lon': 138.5196,
-        'bom_id': '94146', 'prod_id': 'IDS60901'
+        'bom_id': '94146', 'prod_id': 'IDS60901',
+        'bom_place': 'adelaide-airport',
     },
     'Mount Lofty': {
         'lat': -34.9800, 'lon': 138.7083,
-        'bom_id': '95678', 'prod_id': 'IDS60901'
+        'bom_id': '95678', 'prod_id': 'IDS60901',
+        'bom_place': 'mount-lofty',
     },
     'Noarlunga': {
         'lat': -35.1667, 'lon': 138.4833,
-        'bom_id': '94808', 'prod_id': 'IDS60901'
+        'bom_id': '94808', 'prod_id': 'IDS60901',
+        'bom_place': 'noarlunga-centre',
     },
 }
 
@@ -70,24 +77,113 @@ already_ran_today = today_str in df_history['Date'].values
 new_records = []
 
 
-# --- 2. Fetch Forecasts (Today) ---
+# ============================================================
+#  2. FORECAST FETCHERS — Three competing sources
+# ============================================================
 
-def fetch_open_meteo(lat, lon, model):
+# --- SOURCE 1: BOM Published Forecast ---
+def fetch_bom_forecast(bom_place):
     """
-    Fetch daily forecast from Open-Meteo.
-    
-    NOTE on precipitation_probability_max:
-    - Supported by: GFS, ICON, GEM, Météo-France (seamless/blended models)
-    - NOT supported by: raw ECMWF IFS, BOM ACCESS
-    For unsupported models, precipitation_probability_max returns null.
-    We handle this gracefully below.
+    Scrape today's published BOM forecast from bom.gov.au/places/.
+
+    This is the human-curated forecast that BOM meteorologists issue —
+    the prediction most Australians actually see and rely on.
+
+    BOM pages use a consistent <dt>/<dd> structure:
+        Min: 13 °C  |  Max: 24 °C
+        Possible rainfall: 0 to 1 mm
+        Chance of any rain: 40%
+
+    We extract the FIRST forecast block (today / rest of today).
+    """
+    url = f"https://www.bom.gov.au/places/sa/{bom_place}/forecast"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html',
+    }
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        min_temp = None
+        max_temp = None
+        rain_min = 0.0
+        rain_max = 0.0
+        rain_prob = None
+
+        for dt in soup.find_all('dt'):
+            label = dt.get_text(strip=True).lower()
+            dd = dt.find_next_sibling('dd')
+            if dd is None:
+                continue
+            value = dd.get_text(strip=True)
+
+            if label == 'min' and min_temp is None:
+                match = re.search(r'(-?\d+)', value)
+                if match:
+                    min_temp = float(match.group(1))
+
+            elif label == 'max' and max_temp is None:
+                match = re.search(r'(-?\d+)', value)
+                if match:
+                    max_temp = float(match.group(1))
+
+            elif 'possible rainfall' in label and rain_min == 0.0 and rain_max == 0.0:
+                nums = re.findall(r'(\d+\.?\d*)', value)
+                if len(nums) >= 2:
+                    rain_min = float(nums[0])
+                    rain_max = float(nums[1])
+                elif len(nums) == 1:
+                    rain_min = float(nums[0])
+                    rain_max = float(nums[0])
+
+            elif 'chance of any rain' in label and rain_prob is None:
+                match = re.search(r'(\d+)', value)
+                if match:
+                    rain_prob = float(match.group(1))
+
+            # Stop after we have a complete first-day forecast
+            if min_temp is not None and max_temp is not None and rain_prob is not None:
+                break
+
+        if max_temp is None:
+            print(f"  BOM ({bom_place}): Could not extract max temperature.")
+            return None
+
+        print(f"  BOM ({bom_place}): Max={max_temp}, Min={min_temp}, "
+              f"Rain={rain_min}-{rain_max}mm, Prob={rain_prob}%")
+
+        return {
+            'Forecast_Min_Temp': min_temp,
+            'Forecast_Max_Temp': max_temp,
+            'Forecast_Rain_Prob': rain_prob,
+            'Forecast_Rain_Min_mm': rain_min,
+            'Forecast_Rain_Max_mm': rain_max,
+        }
+    except requests.exceptions.RequestException as e:
+        print(f"  BOM ({bom_place}) HTTP Error: {e}")
+        return None
+    except Exception as e:
+        print(f"  BOM ({bom_place}) Parse Error: {e}")
+        return None
+
+
+# --- SOURCE 2: Open-Meteo (Best Match) ---
+def fetch_open_meteo(lat, lon):
+    """
+    Fetch daily forecast from Open-Meteo using "Best Match" mode.
+
+    When no &models= parameter is specified, Open-Meteo automatically
+    selects the best available model for the given location. For Adelaide
+    this typically blends high-resolution local models with global ones.
     """
     url = (
         f"https://api.open-meteo.com/v1/forecast?"
         f"latitude={lat}&longitude={lon}"
-        f"&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum"
+        f"&daily=temperature_2m_max,temperature_2m_min,"
+        f"precipitation_probability_max,precipitation_sum"
         f"&timezone=Australia%2FAdelaide&forecast_days=1"
-        f"&models={model}"
     )
     try:
         res = requests.get(url, timeout=15)
@@ -95,7 +191,7 @@ def fetch_open_meteo(lat, lon, model):
         data = res.json()
 
         if 'daily' not in data:
-            print(f"  Open-Meteo ({model}): No 'daily' key in response. Possibly unsupported model.")
+            print(f"  Open-Meteo: No 'daily' key in response.")
             return None
 
         daily = data['daily']
@@ -105,10 +201,12 @@ def fetch_open_meteo(lat, lon, model):
         rain_prob = daily.get('precipitation_probability_max', [None])[0]
 
         if max_temp is None or min_temp is None:
-            print(f"  Open-Meteo ({model}): Returned null temperature data.")
+            print(f"  Open-Meteo: Returned null temperature data.")
             return None
 
-        # FIX: Return keys matching the CSV column names exactly
+        print(f"  Open-Meteo: Max={max_temp}, Min={min_temp}, "
+              f"Rain={rain_sum}mm, Prob={rain_prob}%")
+
         return {
             'Forecast_Min_Temp': min_temp,
             'Forecast_Max_Temp': max_temp,
@@ -117,20 +215,20 @@ def fetch_open_meteo(lat, lon, model):
             'Forecast_Rain_Max_mm': rain_sum if rain_sum is not None else 0.0,
         }
     except requests.exceptions.RequestException as e:
-        print(f"  Open-Meteo ({model}) HTTP Error: {e}")
+        print(f"  Open-Meteo HTTP Error: {e}")
         return None
     except (KeyError, IndexError, ValueError) as e:
-        print(f"  Open-Meteo ({model}) Parse Error: {e}")
+        print(f"  Open-Meteo Parse Error: {e}")
         return None
 
 
+# --- SOURCE 3: Weatherzone ---
 def scrape_weatherzone():
     """
     Scrape today's Adelaide forecast from Weatherzone.
-    
-    WARNING: Web scraping is fragile. Weatherzone frequently changes their
-    HTML structure. If this function starts returning None, inspect the
-    current page structure and update selectors accordingly.
+
+    WARNING: Web scraping is fragile. If Weatherzone changes their
+    HTML structure, this will need selector updates.
     """
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -141,12 +239,10 @@ def scrape_weatherzone():
         res.raise_for_status()
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # --- Temperature extraction ---
-        # Try multiple selector strategies for robustness
         max_temp = None
         min_temp = None
 
-        # Strategy 1: Look for elements with class containing 'max' and 'min'
+        # Strategy 1: elements with class containing 'max'/'min'
         max_el = soup.find(class_=re.compile(r'max', re.I))
         min_el = soup.find(class_=re.compile(r'min', re.I))
         if max_el:
@@ -158,7 +254,7 @@ def scrape_weatherzone():
             if temp_match:
                 min_temp = float(temp_match.group(1))
 
-        # Strategy 2: Look for temperature patterns in forecast summary
+        # Strategy 2: degree symbol patterns in page text
         if max_temp is None:
             temp_pattern = re.findall(r'(-?\d+)\s*°', soup.get_text())
             if len(temp_pattern) >= 2:
@@ -170,19 +266,16 @@ def scrape_weatherzone():
             print("  Weatherzone: Could not extract temperatures.")
             return None
 
-        # --- Rain extraction ---
         rain_prob = None
         rain_min = 0.0
         rain_max = 0.0
 
-        # Look for rain probability
         prob_el = soup.find(string=re.compile(r'\d+\s*%'))
         if prob_el:
             prob_match = re.search(r'(\d+)\s*%', prob_el)
             if prob_match:
                 rain_prob = float(prob_match.group(1))
 
-        # Look for rain range (e.g., "0-1 mm" or "2-6 mm")
         rain_text = soup.find(string=re.compile(r'\d+[\-–]\d+\s*mm'))
         if rain_text:
             matches = re.findall(r'(\d+\.?\d*)', rain_text)
@@ -190,7 +283,6 @@ def scrape_weatherzone():
                 rain_min = float(matches[0])
                 rain_max = float(matches[1])
         else:
-            # Try single value rain
             rain_single = soup.find(string=re.compile(r'(\d+\.?\d*)\s*mm'))
             if rain_single:
                 match = re.search(r'(\d+\.?\d*)\s*mm', rain_single)
@@ -198,9 +290,9 @@ def scrape_weatherzone():
                     rain_min = float(match.group(1))
                     rain_max = rain_min
 
-        print(f"  Weatherzone: Max={max_temp}, Min={min_temp}, Rain={rain_min}-{rain_max}mm, Prob={rain_prob}%")
+        print(f"  Weatherzone: Max={max_temp}, Min={min_temp}, "
+              f"Rain={rain_min}-{rain_max}mm, Prob={rain_prob}%")
 
-        # FIX: Return keys matching the CSV column names exactly
         return {
             'Forecast_Min_Temp': min_temp,
             'Forecast_Max_Temp': max_temp,
@@ -216,35 +308,43 @@ def scrape_weatherzone():
         return None
 
 
-# --- Collect Forecasts ---
-if not already_ran_today:
-    # FIX: Updated model codes.
-    # - ecmwf_ifs04 is DEPRECATED → replaced with ecmwf_ifs025
-    # - bom_access_global is TEMPORARILY SUSPENDED (BOM open-data offline)
-    #   We still attempt it but handle failure gracefully.
-    open_meteo_models = {
-        'Open-Meteo (ECMWF)': 'ecmwf_ifs025',
-        'Open-Meteo (GFS)': 'gfs_seamless',
-        'Open-Meteo (BOM)': 'bom_access_global',
-    }
+# ============================================================
+#  3. COLLECT TODAY'S FORECASTS
+# ============================================================
 
+if not already_ran_today:
     for station_name, coords in STATIONS.items():
         print(f"\nFetching forecasts for {station_name}...")
 
-        for source_name, model_code in open_meteo_models.items():
-            om_data = fetch_open_meteo(coords['lat'], coords['lon'], model_code)
-            if om_data:
-                new_records.append({
-                    'Date': today_str,
-                    'Station': station_name,
-                    'Source': source_name,
-                    **om_data
-                })
-                print(f"  ✓ {source_name}")
-            else:
-                print(f"  ✗ {source_name} — failed")
+        # --- BOM Published Forecast (location-specific) ---
+        bom_data = fetch_bom_forecast(coords['bom_place'])
+        if bom_data:
+            new_records.append({
+                'Date': today_str,
+                'Station': station_name,
+                'Source': 'BOM',
+                **bom_data
+            })
+            print(f"  ✓ BOM")
+        else:
+            print(f"  ✗ BOM — failed")
+        time.sleep(2)
 
-        # Weatherzone provides a single Adelaide-wide forecast
+        # --- Open-Meteo Best Match (location-specific via lat/lon) ---
+        om_data = fetch_open_meteo(coords['lat'], coords['lon'])
+        if om_data:
+            new_records.append({
+                'Date': today_str,
+                'Station': station_name,
+                'Source': 'Open-Meteo',
+                **om_data
+            })
+            print(f"  ✓ Open-Meteo")
+        else:
+            print(f"  ✗ Open-Meteo — failed")
+        time.sleep(1)
+
+        # --- Weatherzone (Adelaide-wide, same for all stations) ---
         wz_data = scrape_weatherzone()
         if wz_data:
             new_records.append({
@@ -256,21 +356,23 @@ if not already_ran_today:
             print(f"  ✓ Weatherzone")
         else:
             print(f"  ✗ Weatherzone — failed")
+        time.sleep(1)
 
     print(f"\nCollected {len(new_records)} forecast records for {today_str}.")
 else:
     print(f"Forecasts for {today_str} already recorded. Checking Actuals only.")
 
 
-# --- 3. Update Yesterday's Actuals (BOM JSON Feed) ---
+# ============================================================
+#  4. UPDATE YESTERDAY'S ACTUALS (BOM Observations JSON)
+# ============================================================
 
 def fetch_bom_actuals(station_name, bom_id, prod_id):
     """
-    Fetch actual observed weather from BOM JSON feed.
-    
-    Uses www.bom.gov.au (not reg.bom.gov.au) for reliability.
-    The JSON feed contains ~72 hours of half-hourly observations.
-    We scan the last 48 entries (24 hours) for min/max temp.
+    Fetch actual observed weather from BOM JSON observation feed.
+
+    This is NOT a forecast — it's the real recorded data from the
+    weather station instruments. Used to grade all predictions.
     """
     url = f"http://www.bom.gov.au/fwo/{prod_id}/{prod_id}.{bom_id}.json"
     headers = {
@@ -282,16 +384,16 @@ def fetch_bom_actuals(station_name, bom_id, prod_id):
         res = requests.get(url, headers=headers, timeout=15)
 
         if res.status_code != 200:
-            print(f"  BOM {station_name}: HTTP {res.status_code}")
+            print(f"  BOM Actuals {station_name}: HTTP {res.status_code}")
             return None
 
         data = res.json()['observations']['data']
 
         if not data or len(data) < 2:
-            print(f"  BOM {station_name}: Insufficient observation data.")
+            print(f"  BOM Actuals {station_name}: Insufficient observation data.")
             return None
 
-        # Filter observations to yesterday's date only
+        # Filter observations to yesterday's date
         yesterday_obs = []
         for obs in data:
             if obs.get('local_date_time_full'):
@@ -305,14 +407,13 @@ def fetch_bom_actuals(station_name, bom_id, prod_id):
             yesterday_obs = [x for x in data[:48] if x.get('air_temp') is not None]
 
         if not yesterday_obs:
-            print(f"  BOM {station_name}: No valid temperature observations found.")
+            print(f"  BOM Actuals {station_name}: No valid temperature observations.")
             return None
 
         max_t = max(x['air_temp'] for x in yesterday_obs)
         min_t = min(x['air_temp'] for x in yesterday_obs)
 
-        # Rain: 'rain_trace' is cumulative since 9am, reported as a string.
-        # We take the latest observation's rain_trace value.
+        # Rain: 'rain_trace' is cumulative since 9am
         rain = data[0].get('rain_trace', '0')
         rain_mm = 0.0
         if rain and rain != '-':
@@ -321,17 +422,17 @@ def fetch_bom_actuals(station_name, bom_id, prod_id):
             except ValueError:
                 rain_mm = 0.0
 
-        print(f"  BOM {station_name}: Max={max_t}°C, Min={min_t}°C, Rain={rain_mm}mm")
+        print(f"  BOM Actuals {station_name}: Max={max_t}°C, Min={min_t}°C, Rain={rain_mm}mm")
         return {
             'Actual_Min_Temp': min_t,
             'Actual_Max_Temp': max_t,
             'Actual_Rain_mm': rain_mm
         }
     except requests.exceptions.RequestException as e:
-        print(f"  BOM {station_name} HTTP Error: {e}")
+        print(f"  BOM Actuals {station_name} HTTP Error: {e}")
         return None
     except (KeyError, IndexError, ValueError) as e:
-        print(f"  BOM {station_name} Parse Error: {e}")
+        print(f"  BOM Actuals {station_name} Parse Error: {e}")
         return None
 
 
@@ -346,15 +447,17 @@ for station_name, coords in STATIONS.items():
             df_history.loc[mask, 'Actual_Rain_mm'] = actuals['Actual_Rain_mm']
             print(f"  ✓ Updated {mask.sum()} rows for {station_name}")
         else:
-            print(f"  ⚠ No forecast rows found for {station_name} on {yesterday_str} to update.")
+            print(f"  ⚠ No forecast rows for {station_name} on {yesterday_str} to update.")
 
-    time.sleep(2)  # Polite delay between BOM requests
+    time.sleep(2)
 
 
-# --- 4. Save ---
+# ============================================================
+#  5. SAVE
+# ============================================================
+
 if new_records:
     df_new = pd.DataFrame(new_records)
-    # Ensure column order matches
     for col in CSV_COLUMNS:
         if col not in df_new.columns:
             df_new[col] = pd.NA
@@ -363,7 +466,6 @@ if new_records:
 else:
     df_final = df_history
 
-# Ensure output columns are in the correct order
 df_final = df_final[CSV_COLUMNS]
 df_final.to_csv(CSV_FILE, index=False)
 print(f"\n✓ Pipeline complete. CSV has {len(df_final)} rows.")
