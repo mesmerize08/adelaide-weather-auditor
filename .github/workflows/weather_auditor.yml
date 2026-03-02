@@ -2,8 +2,14 @@ name: Weather Accuracy Auditor
 
 on:
   schedule:
-    - cron: '35 22,23 * * *'
-  workflow_dispatch: 
+    # Target: 9:00 AM Adelaide time
+    # ACST (UTC+9:30): 9:00 AM = 23:30 UTC previous day
+    # ACDT (UTC+10:30): 9:00 AM = 22:30 UTC previous day
+    # Run at both to cover DST transitions. The 9 AM guard in the
+    # Python script will exit cleanly if it's outside the window.
+    - cron: '30 22 * * *'   # Covers ACDT (summer)
+    - cron: '30 23 * * *'   # Covers ACST (winter)
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -31,5 +37,5 @@ jobs:
       - name: Commit and Push Changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Automated weather data update"
+          commit_message: "Automated weather data update [skip ci]"
           file_pattern: weather_history.csv
