@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# Page Config must be the first Streamlit command
 st.set_page_config(page_title="Adelaide Weather Auditor", page_icon="🌤️", layout="wide")
 
 @st.cache_data(ttl=3600)
@@ -27,40 +26,37 @@ total_latest = len(df[df['Date'] == latest_date])
 if missing_actuals > 0 and missing_actuals == total_latest:
     st.warning(f"⚠️ Waiting on BOM actuals for {latest_date.strftime('%Y-%m-%d')}. Grading will update after tomorrow's run.")
 
-# --- Data Quality: count how many sources are reporting ---
-sources_today = df[df['Date'] == latest_date]['Source'].nunique()
-expected_sources = 4  # ECMWF, GFS, BOM, Weatherzone
-if sources_today < expected_sources:
-    active_sources = df[df['Date'] == latest_date]['Source'].unique().tolist()
-    st.info(f"📡 Active sources today: {', '.join(active_sources)} ({sources_today}/{expected_sources})")
+# Show which sources reported today
+sources_today = df[df['Date'] == latest_date]['Source'].unique().tolist()
+expected_sources = ['BOM', 'Open-Meteo', 'Weatherzone']
+if len(sources_today) < len(expected_sources):
+    missing = [s for s in expected_sources if s not in sources_today]
+    if missing:
+        st.info(f"📡 Missing source(s) today: {', '.join(missing)}")
 
-# Prepare Evaluation Data — only rows where actuals exist
+# Prepare Evaluation Data — only rows with both forecasts AND actuals
 df_eval = df.dropna(subset=['Actual_Min_Temp', 'Actual_Max_Temp']).copy()
-
-# Also require forecast data to exist for meaningful comparison
 df_eval = df_eval.dropna(subset=['Forecast_Max_Temp']).copy()
 
 if df_eval.empty:
-    st.info("No completed forecast+actuals pairs available yet. The pipeline needs at least 2 days of data to start grading.")
+    st.info("No graded data yet. The pipeline needs at least 2 days to collect a forecast and then compare it to actuals.")
     st.stop()
 
 # --- Core Error Calculations ---
 df_eval['Max_Temp_Error'] = abs(df_eval['Forecast_Max_Temp'] - df_eval['Actual_Max_Temp'])
 df_eval['Min_Temp_Error'] = abs(df_eval['Forecast_Min_Temp'] - df_eval['Actual_Min_Temp'])
 
-# Rain: midpoint of forecast range vs actual
 df_eval['Forecast_Rain_Mid'] = (
     df_eval['Forecast_Rain_Min_mm'].fillna(0) + df_eval['Forecast_Rain_Max_mm'].fillna(0)
 ) / 2
 df_eval['Rain_Error'] = abs(df_eval['Forecast_Rain_Mid'] - df_eval['Actual_Rain_mm'].fillna(0))
 
-# "Perfect" Rain = actual falls within the predicted min/max range
 df_eval['Rain_Success'] = (
     (df_eval['Actual_Rain_mm'] >= df_eval['Forecast_Rain_Min_mm']) &
     (df_eval['Actual_Rain_mm'] <= df_eval['Forecast_Rain_Max_mm'])
 )
 
-# --- Sidebar Navigation ---
+# --- Sidebar ---
 st.sidebar.title("⚙️ Dashboard Controls")
 selected_station = st.sidebar.selectbox("📍 Select Station", sorted(df['Station'].unique()))
 
@@ -77,20 +73,18 @@ else:
 
 st.sidebar.divider()
 
-# --- The "Perfect Day" Filter ---
 st.sidebar.header("🌟 Filters")
-st.sidebar.write("A **Perfect Day** means the max temp was predicted within 1.0°C and the actual rainfall fell within the forecast range.")
+st.sidebar.write("A **Perfect Day** = max temp within 1.0°C and rain within the forecast range.")
 show_perfect_only = st.sidebar.checkbox("Show 'Perfect Days' Only")
 
-# Apply filter on a COPY to avoid mutating df_eval for other sections
 df_display = df_eval.copy()
 if show_perfect_only:
     df_display = df_display[(df_display['Max_Temp_Error'] <= 1.0) & (df_display['Rain_Success'])]
-    st.sidebar.success(f"Found {len(df_display)} perfect forecasts across all stations!")
+    st.sidebar.success(f"Found {len(df_display)} perfect forecasts!")
 
 # --- MAIN DASHBOARD ---
 st.title("🌤️ Adelaide Weather Accuracy Auditor")
-st.caption("Comparing forecast accuracy across weather models for Adelaide, SA. Data sourced from Open-Meteo, Weatherzone, and BOM.")
+st.caption("Comparing BOM, Open-Meteo, and Weatherzone forecast accuracy for Adelaide, SA. Graded against official BOM recorded observations.")
 
 # --- Section 1: Leaderboard ---
 st.header(f"🏆 30-Day Accuracy: {selected_station}")
@@ -102,42 +96,40 @@ station_30 = df_display[
 ]
 
 if not station_30.empty:
-    # Leaderboard Table
     leaderboard = station_30.groupby('Source').agg(
         Max_Temp_MAE=('Max_Temp_Error', 'mean'),
         Min_Temp_MAE=('Min_Temp_Error', 'mean'),
         Rain_MAE=('Rain_Error', 'mean'),
         Rain_Hit_Rate=('Rain_Success', 'mean'),
-        Forecasts=('Source', 'count'),
+        Days=('Source', 'count'),
     ).reset_index().round(2)
 
-    # Convert rain hit rate to percentage
     leaderboard['Rain_Hit_Rate'] = (leaderboard['Rain_Hit_Rate'] * 100).round(1).astype(str) + '%'
 
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("🌡️ Temperature Accuracy")
         temp_lb = leaderboard.sort_values('Max_Temp_MAE')[
-            ['Source', 'Max_Temp_MAE', 'Min_Temp_MAE', 'Forecasts']
+            ['Source', 'Max_Temp_MAE', 'Min_Temp_MAE', 'Days']
         ].rename(columns={
             'Max_Temp_MAE': 'Max Temp MAE (°C)',
             'Min_Temp_MAE': 'Min Temp MAE (°C)',
-            'Forecasts': '# Days',
+            'Days': '# Days',
         })
         st.dataframe(temp_lb, hide_index=True, use_container_width=True)
 
     with col2:
         st.subheader("🌧️ Rainfall Accuracy")
         rain_lb = leaderboard.sort_values('Rain_MAE')[
-            ['Source', 'Rain_MAE', 'Rain_Hit_Rate', 'Forecasts']
+            ['Source', 'Rain_MAE', 'Rain_Hit_Rate', 'Days']
         ].rename(columns={
             'Rain_MAE': 'Rain MAE (mm)',
             'Rain_Hit_Rate': 'In-Range %',
-            'Forecasts': '# Days',
+            'Days': '# Days',
         })
         st.dataframe(rain_lb, hide_index=True, use_container_width=True)
 
-    # Interactive Trend Chart
+    # Trend Chart
     st.subheader("📉 Max Temp Error Trend (Last 30 Days)")
     st.caption("Lower = more accurate.")
     chart_data = station_30.pivot_table(index='Date', columns='Source', values='Max_Temp_Error')
@@ -160,10 +152,9 @@ if not day_data.empty:
     actual_rain = day_data['Actual_Rain_mm'].iloc[0]
 
     st.markdown(
-        f"**BOM Actuals:** Max: `{actual_max}°C` · Min: `{actual_min}°C` · Rain: `{actual_rain}mm`"
+        f"**BOM Recorded Actuals:** Max: `{actual_max}°C` · Min: `{actual_min}°C` · Rain: `{actual_rain}mm`"
     )
 
-    # Create columns per source
     cols = st.columns(len(day_data))
 
     for i, (idx, row) in enumerate(day_data.iterrows()):
@@ -212,8 +203,11 @@ with st.expander("📊 Data Coverage Summary"):
         Has_Forecasts=('Forecast_Max_Temp', lambda x: x.notna().any()),
     ).reset_index()
     coverage['Date'] = coverage['Date'].dt.strftime('%Y-%m-%d')
-    st.dataframe(coverage.sort_values('Date', ascending=False).head(30), hide_index=True, use_container_width=True)
+    st.dataframe(
+        coverage.sort_values('Date', ascending=False).head(40),
+        hide_index=True, use_container_width=True
+    )
 
 # --- Footer ---
 st.divider()
-st.caption("Data: Open-Meteo (ECMWF, GFS, BOM ACCESS), Weatherzone, Bureau of Meteorology · Updated daily at ~9 AM ACST")
+st.caption("Forecasts: BOM (weather.bom.gov.au), Open-Meteo (Best Match), Weatherzone · Actuals: Bureau of Meteorology observations · Updated daily at ~9 AM ACST")
