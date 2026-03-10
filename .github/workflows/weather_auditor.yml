@@ -35,26 +35,33 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install requests beautifulsoup4 pandas pytz playwright
+          pip install requests beautifulsoup4 pandas pytz playwright "scrapling[fetchers]"
 
-      - name: Cache Playwright browsers
+      - name: Cache browser binaries
+        # Covers both Playwright (ms-playwright) and Scrapling browser caches.
+        # Scrapling's StealthyFetcher uses Playwright-based browsers, so the
+        # same binary cache directory is shared.
         uses: actions/cache@v4
-        id: playwright-cache
+        id: browser-cache
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
+          path: |
+            ~/.cache/ms-playwright
+            ~/.cache/scrapling
+          key: browsers-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: |
-            playwright-chromium-${{ runner.os }}-
+            browsers-${{ runner.os }}-
 
-      - name: Install Playwright Chromium browser
-        # Only runs on a cache miss (~90s saved when cache hits).
-        # Installs headless Chromium + all system libs needed on ubuntu-latest.
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: playwright install chromium --with-deps
+      - name: Install browser binaries
+        # Only on cache miss — saves ~90s on hits.
+        # Scrapling install sets up stealth browser fingerprinting data + Playwright browsers.
+        if: steps.browser-cache.outputs.cache-hit != 'true'
+        run: |
+          playwright install chromium --with-deps
+          scrapling install
 
-      - name: Install Playwright system deps (from cache)
-        # When browser binary is cached we still need the OS system libraries.
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
+      - name: Install browser system deps (from cache)
+        # When binaries are cached, OS system libraries still need to be installed.
+        if: steps.browser-cache.outputs.cache-hit == 'true'
         run: playwright install-deps chromium
 
       - name: Run weather fetcher

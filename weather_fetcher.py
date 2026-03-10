@@ -264,17 +264,24 @@ def fetch_bom_forecast(search_term: str, known_geohash: str | None = None) -> di
 def scrape_weatherzone(url: str) -> dict | None:
     """
     Scrape Weatherzone Adelaide forecast.
-    Primary:  Playwright (headless Chromium) — fully renders the SPA, bypasses
-              Cloudflare bot detection, intercepts the React app's internal JSON API.
-    Fallback: requests-based scraping (faster but often blocked).
+
+    Attempt order (each falls through to next on failure):
+      1. Scrapling StealthyFetcher — real browser + Cloudflare Turnstile solver
+      2. Playwright — headless Chromium with API response interception
+      3. requests — plain HTTP (fastest, but usually blocked by Cloudflare)
     """
-    # ── Primary: Playwright ───────────────────────────────────
+    # ── Primary: Scrapling (Cloudflare bypass) ─────────────────
+    result = _scrape_weatherzone_scrapling(url)
+    if result:
+        return result
+
+    # ── Secondary: Playwright ──────────────────────────────────
     result = _scrape_weatherzone_playwright(url)
     if result:
         return result
 
-    # ── Fallback: plain HTTP (for local dev or if Playwright missing) ─
-    log.info("WZ: Playwright unavailable/failed — trying requests fallback")
+    # ── Fallback: plain HTTP ───────────────────────────────────
+    log.info("WZ: All browser methods failed — trying requests fallback")
     for attempt_url in [url, url.replace('www.', 'm.')]:
         result = _scrape_weatherzone_requests(attempt_url)
         if result:
@@ -282,6 +289,86 @@ def scrape_weatherzone(url: str) -> dict | None:
 
     log.warning(f"WZ: All methods failed for {url}")
     return None
+
+
+# ─────────────────────────────────────────────────────────
+# Weatherzone — Scrapling stealth renderer (primary)
+# ─────────────────────────────────────────────────────────
+
+def _scrape_weatherzone_scrapling(url: str) -> dict | None:
+    """
+    Use Scrapling's StealthyFetcher to render Weatherzone and bypass Cloudflare.
+    StealthyFetcher launches a real browser with fingerprint spoofing and
+    automatically solves Cloudflare Turnstile / interstitial challenges.
+
+    Requires: pip install "scrapling[fetchers]" && scrapling install
+    """
+    try:
+        from scrapling.fetchers import StealthyFetcher
+    except ImportError:
+        log.warning("WZ Scrapling: package not installed — skipping")
+        return None
+
+    try:
+        page = StealthyFetcher.fetch(
+            url,
+            headless=True,
+            network_idle=True,       # wait for React/XHR to settle
+            solve_cloudflare=True,   # auto-solve Turnstile / interstitial
+            disable_resources=False, # keep JS enabled for SPA rendering
+        )
+
+        if not page:
+            log.warning("WZ Scrapling: empty response")
+            return None
+
+        # Get raw HTML from the Scrapling adaptor
+        html = getattr(page, 'html', None) or str(page)
+        if not html or len(html) < 500:
+            log.warning("WZ Scrapling: response too short — likely blocked")
+            return None
+
+        log.info(f"WZ Scrapling: page fetched OK ({len(html):,} chars)")
+        soup = BeautifulSoup(html, 'html.parser')
+
+        # Strategy 1: __NEXT_DATA__ SSR blob
+        nd_script = soup.find('script', id='__NEXT_DATA__')
+        if nd_script and nd_script.string:
+            try:
+                nd = json.loads(nd_script.string)
+                fc = _find_wz_forecast(nd)
+                if fc:
+                    result = _build_wz_result(fc)
+                    if result:
+                        log.info(f"WZ Scrapling __NEXT_DATA__: Max {result['Max_Temp']}°C")
+                        return result
+            except Exception as exc:
+                log.debug(f"WZ Scrapling __NEXT_DATA__ error: {exc}")
+
+        # Strategy 2: any application/json script tags
+        for tag in soup.find_all('script', type='application/json'):
+            try:
+                fc = _find_wz_forecast(json.loads(tag.string or ''))
+                if fc:
+                    result = _build_wz_result(fc)
+                    if result:
+                        log.info(f"WZ Scrapling JSON tag: Max {result['Max_Temp']}°C")
+                        return result
+            except Exception:
+                pass
+
+        # Strategy 3: rendered DOM text regex
+        result = _extract_wz_from_text(soup.get_text(separator=' '))
+        if result:
+            log.info(f"WZ Scrapling DOM text: Max {result['Max_Temp']}°C")
+            return result
+
+        log.warning("WZ Scrapling: page rendered but no forecast data found")
+        return None
+
+    except Exception as exc:
+        log.error(f"WZ Scrapling error: {exc}")
+        return None
 
 
 # ─────────────────────────────────────────────────────────
