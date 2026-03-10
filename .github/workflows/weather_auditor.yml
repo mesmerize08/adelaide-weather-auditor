@@ -37,11 +37,25 @@ jobs:
           pip install --upgrade pip
           pip install requests beautifulsoup4 pandas pytz playwright
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            playwright-chromium-${{ runner.os }}-
+
       - name: Install Playwright Chromium browser
+        # Only runs on a cache miss (~90s saved when cache hits).
         # Installs headless Chromium + all system libs needed on ubuntu-latest.
-        # This lets us fully render Weatherzone's JavaScript SPA and bypass
-        # Cloudflare bot detection that blocks plain requests.
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: playwright install chromium --with-deps
+
+      - name: Install Playwright system deps (from cache)
+        # When browser binary is cached we still need the OS system libraries.
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
 
       - name: Run weather fetcher
         run: python weather_fetcher.py

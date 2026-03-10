@@ -6,7 +6,6 @@ then backfills yesterday's actuals from BOM observations.
 """
 
 import os
-import sys
 import json
 import logging
 import re
@@ -118,6 +117,39 @@ new_records = []
 # ─────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────
+
+def validate_forecast(data: dict, source: str, station: str) -> bool:
+    """
+    Sanity-check a forecast dict before writing to CSV.
+    Returns False (and logs a warning) if anything looks wrong.
+    """
+    min_t = safe_float(data.get('Min_Temp'))
+    max_t = safe_float(data.get('Max_Temp'))
+    rain_prob = safe_float(data.get('Rain_Prob'))
+    rain_min = safe_float(data.get('Rain_Min'), 0.0)
+    rain_max = safe_float(data.get('Rain_Max'), 0.0)
+
+    if max_t is None:
+        log.warning(f"Validation [{source}|{station}]: Max_Temp is None — skipping")
+        return False
+    if not (0 <= max_t <= 55):
+        log.warning(f"Validation [{source}|{station}]: Max_Temp={max_t} outside [0,55] — skipping")
+        return False
+    if min_t is not None:
+        if not (0 <= min_t <= 55):
+            log.warning(f"Validation [{source}|{station}]: Min_Temp={min_t} outside [0,55] — skipping")
+            return False
+        if min_t > max_t:
+            log.warning(f"Validation [{source}|{station}]: Min_Temp={min_t} > Max_Temp={max_t} — skipping")
+            return False
+    if rain_prob is not None and not (0 <= rain_prob <= 100):
+        log.warning(f"Validation [{source}|{station}]: Rain_Prob={rain_prob} outside [0,100] — skipping")
+        return False
+    if rain_min > rain_max:
+        log.warning(f"Validation [{source}|{station}]: Rain_Min={rain_min} > Rain_Max={rain_max} — skipping")
+        return False
+    return True
+
 
 def already_exists(station: str, source: str) -> bool:
     """Return True if today's record for this station+source already exists."""
@@ -416,32 +448,41 @@ def _find_wz_forecast(data, _depth: int = 0):
     return None
 
 
+def _first_not_none(d: dict, *keys):
+    """Return the first value in `d` for any key in `keys` that is not None."""
+    for k in keys:
+        v = d.get(k)
+        if v is not None:
+            return v
+    return None
+
+
 def _build_wz_result(fc: dict) -> dict | None:
     """Convert a raw Weatherzone forecast dict to our standard result shape."""
-    max_t = (
-        fc.get('maxTemp') or fc.get('max_temp') or fc.get('tempMax') or
-        fc.get('highTemperature') or fc.get('maximumTemperature') or
-        fc.get('temperature_max')
+    # Use _first_not_none so that a legitimate 0°C value isn't skipped by `or`
+    max_t = _first_not_none(
+        fc, 'maxTemp', 'max_temp', 'tempMax',
+        'highTemperature', 'maximumTemperature', 'temperature_max',
     )
     if max_t is None:
         return None
 
-    min_t = (
-        fc.get('minTemp') or fc.get('min_temp') or fc.get('tempMin') or
-        fc.get('lowTemperature') or fc.get('minimumTemperature') or
-        fc.get('temperature_min')
+    min_t = _first_not_none(
+        fc, 'minTemp', 'min_temp', 'tempMin',
+        'lowTemperature', 'minimumTemperature', 'temperature_min',
     )
 
-    rain_prob = (
-        fc.get('rainChance') or fc.get('rainProb') or fc.get('pop') or
-        fc.get('precipProbability') or fc.get('rain_probability') or
-        fc.get('chanceOfRain') or fc.get('precipitationProbability')
+    rain_prob = _first_not_none(
+        fc, 'rainChance', 'rainProb', 'pop',
+        'precipProbability', 'rain_probability',
+        'chanceOfRain', 'precipitationProbability',
     )
 
     # Handle nested rain structure: {"rain": {"amount": {"min":1,"max":5}, "chance":30}}
-    rain_info = fc.get('rain') or fc.get('rainfall') or fc.get('precipitation') or {}
+    rain_info = _first_not_none(fc, 'rain', 'rainfall', 'precipitation') or {}
     if isinstance(rain_info, dict):
-        rain_prob = rain_prob or rain_info.get('chance') or rain_info.get('probability')
+        if rain_prob is None:
+            rain_prob = _first_not_none(rain_info, 'chance', 'probability')
         amount = rain_info.get('amount') or rain_info
         if isinstance(amount, dict):
             rain_min_v = amount.get('min', 0) or 0
@@ -451,12 +492,8 @@ def _build_wz_result(fc: dict) -> dict | None:
         else:
             rain_min_v = rain_max_v = 0.0
     else:
-        rain_min_v = safe_float(
-            fc.get('rainMin') or fc.get('precipMin') or fc.get('rain_min'), 0.0
-        )
-        rain_max_v = safe_float(
-            fc.get('rainMax') or fc.get('precipMax') or fc.get('rain_max'), rain_min_v
-        )
+        rain_min_v = safe_float(_first_not_none(fc, 'rainMin', 'precipMin', 'rain_min'), 0.0)
+        rain_max_v = safe_float(_first_not_none(fc, 'rainMax', 'precipMax', 'rain_max'), rain_min_v)
 
     return {
         'Min_Temp': safe_float(min_t),
@@ -669,6 +706,16 @@ def fetch_open_meteo_actuals(lat: float, lon: float, date_str: str) -> dict | No
 log.info("=" * 60)
 log.info("STEP 1: Fetching forecasts")
 
+# All 3 stations share the same Weatherzone Adelaide URL.
+# Scrape once and reuse so Playwright only launches one browser session.
+_wz_cache: dict[str, dict | None] = {}
+
+def _get_wz(url: str) -> dict | None:
+    if url not in _wz_cache:
+        _wz_cache[url] = scrape_weatherzone(url)
+    return _wz_cache[url]
+
+
 for name, cfg in STATIONS.items():
 
     # --- Open-Meteo ---
@@ -676,7 +723,7 @@ for name, cfg in STATIONS.items():
         log.info(f"  Open-Meteo | {name}: already recorded, skipping")
     else:
         om = fetch_open_meteo(cfg['lat'], cfg['lon'])
-        if om:
+        if om and validate_forecast(om, 'Open-Meteo', name):
             new_records.append({
                 'Date': today_str, 'Station': name, 'Source': 'Open-Meteo',
                 'Forecast_Min_Temp': om['Min_Temp'],
@@ -698,7 +745,7 @@ for name, cfg in STATIONS.items():
         log.info(f"  BOM        | {name}: already recorded, skipping")
     else:
         bom_fc = fetch_bom_forecast(cfg['bom_search'], known_geohash=cfg.get('bom_geohash'))
-        if bom_fc:
+        if bom_fc and validate_forecast(bom_fc, 'BOM', name):
             new_records.append({
                 'Date': today_str, 'Station': name, 'Source': 'BOM',
                 'Forecast_Min_Temp': bom_fc['Min_Temp'],
@@ -719,8 +766,8 @@ for name, cfg in STATIONS.items():
     if already_exists(name, 'Weatherzone'):
         log.info(f"  Weatherzone| {name}: already recorded, skipping")
     else:
-        wz = scrape_weatherzone(cfg['wz_url'])
-        if wz:
+        wz = _get_wz(cfg['wz_url'])
+        if wz and validate_forecast(wz, 'Weatherzone', name):
             new_records.append({
                 'Date': today_str, 'Station': name, 'Source': 'Weatherzone',
                 'Forecast_Min_Temp': wz['Min_Temp'],
