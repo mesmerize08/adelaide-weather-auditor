@@ -32,10 +32,16 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install requests beautifulsoup4 pandas pytz
+          pip install requests beautifulsoup4 pandas pytz playwright
+
+      - name: Install Playwright Chromium browser
+        # Installs headless Chromium + all system libs needed on ubuntu-latest.
+        # This lets us fully render Weatherzone's JavaScript SPA and bypass
+        # Cloudflare bot detection that blocks plain requests.
+        run: playwright install chromium --with-deps
 
       - name: Run weather fetcher
         run: python weather_fetcher.py
