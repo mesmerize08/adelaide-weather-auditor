@@ -1,1 +1,6 @@
 Date,Station,Source,Forecast_Min_Temp,Forecast_Max_Temp,Forecast_Rain_Prob,Forecast_Rain_Min_mm,Forecast_Rain_Max_mm,Actual_Min_Temp,Actual_Max_Temp,Actual_Rain_mm
+2026-03-10,West Terrace,Open-Meteo,16.3,30.7,0,0.0,0.0,,,
+2026-03-10,West Terrace,BOM,14.0,31.0,0,0.0,0.0,,,
+2026-03-10,Airport,Open-Meteo,18.9,24.1,0,0.0,0.0,,,
+2026-03-10,Airport,BOM,15.0,30.0,0,0.0,0.0,,,
+2026-03-10,Mt Lofty,Open-Meteo,8.1,26.8,0,0.0,0.0,,,
