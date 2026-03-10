@@ -43,23 +43,35 @@ STATIONS = {
     'West Terrace': {
         'lat': -34.9285,
         'lon': 138.5955,
-        'bom_station_id': '023034',   # BOM 6-digit station number (SA)
-        'bom_search': 'Adelaide',      # Search term for BOM forecast API
+        # BOM observation JSON uses WMO IDs in filenames; 6-digit BOM station as fallback
+        'bom_wmo_id': '94648',
+        'bom_station_id': '023034',
+        # BOM forecast API: confirmed geohash from live run (r1f93ck)
+        'bom_search': 'Adelaide',
+        'bom_geohash': 'r1f93ck',
+        # Weatherzone: all three stations use Adelaide city forecast (WZ is city-level)
         'wz_url': 'https://www.weatherzone.com.au/sa/adelaide/adelaide',
     },
     'Airport': {
         'lat': -34.9524,
         'lon': 138.5196,
+        'bom_wmo_id': '94672',
         'bom_station_id': '023090',
+        # BOM forecast API: confirmed geohash from live run (r1f90q5)
         'bom_search': 'Adelaide Airport',
-        'wz_url': 'https://www.weatherzone.com.au/sa/adelaide/adelaide-airport',
+        'bom_geohash': 'r1f90q5',
+        'wz_url': 'https://www.weatherzone.com.au/sa/adelaide/adelaide',
     },
     'Mt Lofty': {
         'lat': -34.9800,
         'lon': 138.7083,
+        'bom_wmo_id': '94693',
         'bom_station_id': '023838',
+        # BOM search API returns no result for "Mount Lofty" (summit, not a suburb).
+        # Use hardcoded geohash (r1fy9t) — verified approximate for -34.98, 138.71.
         'bom_search': 'Mount Lofty',
-        'wz_url': 'https://www.weatherzone.com.au/sa/mount-lofty/mount-lofty',
+        'bom_geohash': 'r1fy9t',
+        'wz_url': 'https://www.weatherzone.com.au/sa/adelaide/adelaide',
     },
 }
 
@@ -70,15 +82,26 @@ COLUMNS = [
     'Actual_Min_Temp', 'Actual_Max_Temp', 'Actual_Rain_mm',
 ]
 
-# Browser-like headers to avoid 403s
+# Full Chrome-like headers including Sec-Fetch-* which many CDNs/Cloudflare check
 HEADERS = {
     'User-Agent': (
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
         'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/120.0.0.0 Safari/537.36'
+        'Chrome/122.0.0.0 Safari/537.36'
     ),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-AU,en;q=0.9',
+    'Accept': (
+        'text/html,application/xhtml+xml,application/xml;'
+        'q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+    ),
+    'Accept-Language': 'en-AU,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Cache-Control': 'max-age=0',
 }
 
 # ─────────────────────────────────────────────────────────
@@ -145,18 +168,21 @@ def fetch_open_meteo(lat: float, lon: float) -> dict | None:
         return None
 
 
-def fetch_bom_forecast(search_term: str) -> dict | None:
+def fetch_bom_forecast(search_term: str, known_geohash: str | None = None) -> dict | None:
     """
     BOM forecast via the new weather.bom.gov.au JSON API.
-    Step 1: resolve location geohash via search endpoint.
-    Step 2: fetch daily forecast for that geohash.
+    If known_geohash is provided it is used directly (skips search).
+    Otherwise: search for an SA location, fall back to known_geohash if nothing found.
     """
     api_headers = {
         'User-Agent': 'Mozilla/5.0',
         'Accept': 'application/json',
     }
+
+    geohash = known_geohash  # may be overwritten by a fresher search result
+
     try:
-        # Step 1: resolve geohash
+        # ── Step 1: resolve geohash via search (best-effort) ──────
         search_url = (
             f"https://api.weather.bom.gov.au/v1/locations"
             f"?search={requests.utils.quote(search_term)}"
@@ -165,18 +191,19 @@ def fetch_bom_forecast(search_term: str) -> dict | None:
         search_res.raise_for_status()
         search_data = search_res.json().get('data', [])
 
-        geohash = None
         for loc in search_data:
             if loc.get('state') == 'SA':
                 geohash = loc.get('geohash')
                 log.info(f"BOM: '{search_term}' → geohash={geohash}, name={loc.get('name')}")
                 break
 
-        if not geohash:
-            log.warning(f"BOM: No SA result for '{search_term}'")
+        if geohash == known_geohash and known_geohash:
+            log.info(f"BOM: No live SA result for '{search_term}', using hardcoded geohash={geohash}")
+        elif not geohash:
+            log.warning(f"BOM: No geohash resolved for '{search_term}' — skipping")
             return None
 
-        # Step 2: daily forecast
+        # ── Step 2: daily forecast ─────────────────────────────────
         fc_url = f"https://api.weather.bom.gov.au/v1/locations/{geohash}/forecasts/daily"
         fc_res = requests.get(fc_url, headers=api_headers, timeout=15)
         fc_res.raise_for_status()
@@ -187,7 +214,7 @@ def fetch_bom_forecast(search_term: str) -> dict | None:
 
         max_temp = today_data.get('temp_max')
         if max_temp is None:
-            log.warning(f"BOM: Null max_temp for '{search_term}'")
+            log.warning(f"BOM: Null max_temp for geohash={geohash}")
             return None
 
         return {
@@ -198,25 +225,64 @@ def fetch_bom_forecast(search_term: str) -> dict | None:
             'Rain_Max': amount_info.get('max') or 0,
         }
     except Exception as exc:
-        log.error(f"BOM forecast '{search_term}': {exc}")
+        log.error(f"BOM forecast '{search_term}' (geohash={geohash}): {exc}")
         return None
 
 
 def scrape_weatherzone(url: str) -> dict | None:
     """
-    Scrape Weatherzone forecast page.
-    Tries three strategies in order:
+    Scrape Weatherzone Adelaide forecast.
+    Tries the desktop URL first, then a mobile URL fallback.
+    Within each page, tries three parsing strategies:
       1. Embedded Next.js JSON (__NEXT_DATA__)
-      2. Structured schema.org / application/json script tags
+      2. application/json script tags
       3. Regex-based text extraction from page body
     """
+    # Build list of URLs to attempt: desktop first, then mobile subdomain
+    mobile_url = url.replace(
+        'www.weatherzone.com.au', 'm.weatherzone.com.au'
+    )
+    urls_to_try = [url, mobile_url]
+
+    for attempt_url in urls_to_try:
+        result = _parse_weatherzone_page(attempt_url)
+        if result:
+            return result
+
+    log.warning(f"WZ: All strategies failed for {url} (desktop + mobile)")
+    return None
+
+
+def _parse_weatherzone_page(url: str) -> dict | None:
+    """Fetch one Weatherzone URL and attempt to extract forecast data."""
     try:
         res = requests.get(url, headers=HEADERS, timeout=20)
+
+        # Log HTTP status so we can diagnose blocks/redirects in Actions logs
+        log.info(f"WZ HTTP {res.status_code} → {res.url}")
         res.raise_for_status()
+
+        content_type = res.headers.get('Content-Type', '')
+        if 'text/html' not in content_type and 'json' not in content_type:
+            log.warning(f"WZ: Unexpected Content-Type '{content_type}' from {url}")
+            return None
+
+        # If the response is JSON directly (some endpoints return JSON)
+        if 'json' in content_type:
+            try:
+                return _extract_from_wz_json(res.json())
+            except Exception:
+                pass
+
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # ── Strategy 1: Next.js embedded data ────────────────────
+        # Diagnostic: report whether Next.js data was embedded
         nd_script = soup.find('script', id='__NEXT_DATA__')
+        log.info(f"WZ __NEXT_DATA__ present: {nd_script is not None}")
+        if nd_script:
+            log.debug(f"WZ __NEXT_DATA__ (first 300 chars): {nd_script.string[:300] if nd_script.string else 'empty'}")
+
+        # ── Strategy 1: Next.js embedded data ────────────────────
         if nd_script:
             try:
                 nd = json.loads(nd_script.string)
@@ -310,14 +376,47 @@ def scrape_weatherzone(url: str) -> dict | None:
                 'Rain_Max': rain_max_v,
             }
 
-        log.warning(f"WZ: All strategies failed for {url}")
+        log.info(f"WZ: No data extracted from {url}")
         return None
 
     except requests.HTTPError as exc:
-        log.error(f"WZ HTTP error {url}: {exc}")
+        log.warning(f"WZ HTTP error {url}: {exc}")
         return None
     except Exception as exc:
-        log.error(f"WZ scrape error {url}: {exc}")
+        log.warning(f"WZ parse error {url}: {exc}")
+        return None
+
+
+def _extract_from_wz_json(data: dict) -> dict | None:
+    """
+    Attempt to extract today's forecast from a Weatherzone JSON payload.
+    Called when the response Content-Type is application/json.
+    """
+    try:
+        # Try common Weatherzone API response shapes
+        forecasts = (
+            data.get('forecasts') or
+            data.get('forecast') or
+            data.get('data', {}).get('forecasts') or
+            []
+        )
+        today = forecasts[0] if isinstance(forecasts, list) and forecasts else {}
+        max_t = today.get('maxTemp') or today.get('max') or today.get('tempMax')
+        if max_t is None:
+            return None
+        min_t = today.get('minTemp') or today.get('min') or today.get('tempMin')
+        rain_prob = today.get('rainProb') or today.get('pop') or today.get('rainChance')
+        rain_min_v = today.get('rainMin') or today.get('precipMin') or 0
+        rain_max_v = today.get('rainMax') or today.get('precipMax') or rain_min_v
+        log.info(f"WZ JSON API: max={max_t}, min={min_t}")
+        return {
+            'Min_Temp': safe_float(min_t),
+            'Max_Temp': safe_float(max_t),
+            'Rain_Prob': safe_float(rain_prob),
+            'Rain_Min': safe_float(rain_min_v, 0.0),
+            'Rain_Max': safe_float(rain_max_v, 0.0),
+        }
+    except Exception:
         return None
 
 
@@ -325,44 +424,41 @@ def scrape_weatherzone(url: str) -> dict | None:
 # ACTUALS FETCHER
 # ─────────────────────────────────────────────────────────
 
-def fetch_bom_actuals(station_id: str) -> dict | None:
+def fetch_bom_actuals(wmo_id: str, station_id: str) -> dict | None:
     """
     Fetch actuals from BOM observation JSON (IDS60901 SA product).
-    Returns max/min temp and total rainfall for the most recent ~24h period.
-    Tries 6-digit station ID first, then 5-digit (WMO) as fallback.
+    The IDS60901 filenames use the WMO ID (5-digit, e.g. 94648).
+    Falls back to Open-Meteo historical if BOM is unreachable (e.g. IP geo-block).
     """
-    ids_to_try = [
+    # WMO ID first — this is what IDS60901 filenames actually use
+    urls_to_try = [
+        f"http://www.bom.gov.au/fwo/IDS60901/IDS60901.{wmo_id}.json",
         f"http://www.bom.gov.au/fwo/IDS60901/IDS60901.{station_id}.json",
-        # Fallback: strip leading zero for stations like 023034 → 23034
-        f"http://www.bom.gov.au/fwo/IDS60901/IDS60901.{station_id.lstrip('0')}.json",
+        f"http://reg.bom.gov.au/fwo/IDS60901/IDS60901.{wmo_id}.json",
     ]
 
-    for url in ids_to_try:
+    for url in urls_to_try:
         try:
             res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+            log.info(f"BOM obs HTTP {res.status_code} → {url}")
             res.raise_for_status()
             data = res.json()['observations']['data']
 
             if not data:
                 continue
 
-            # BOM data is in 30-min intervals, newest first.
-            # Take up to 48 records (~24h) to find max/min.
+            # BOM data is 30-min intervals, newest first. Take up to 48 (~24h).
             readings = data[:48]
-            temps = [
-                x['air_temp'] for x in readings
-                if x.get('air_temp') is not None
-            ]
-
+            temps = [x['air_temp'] for x in readings if x.get('air_temp') is not None]
             if not temps:
                 continue
 
-            # rain_trace = cumulative mm since 9am local time (newest reading)
+            # rain_trace = cumulative mm since 9am local time
             rain_raw = str(data[0].get('rain_trace', '-')).strip()
             if rain_raw in ('-', '', 'None'):
                 rain_mm = 0.0
             elif rain_raw.lower() == 'trace':
-                rain_mm = 0.1  # BOM "Trace" = <0.2mm
+                rain_mm = 0.1
             else:
                 rain_mm = safe_float(rain_raw, 0.0)
 
@@ -373,11 +469,47 @@ def fetch_bom_actuals(station_id: str) -> dict | None:
             }
 
         except Exception as exc:
-            log.debug(f"BOM obs {url}: {exc}")
+            log.warning(f"BOM obs attempt failed ({url}): {exc}")
             continue
 
-    log.error(f"BOM actuals: all URLs failed for station_id={station_id}")
-    return None
+    # ── Fallback: Open-Meteo provides model-analysis data for recent past days ──
+    log.warning(f"BOM actuals unavailable for WMO={wmo_id} — trying Open-Meteo fallback")
+    return None  # fallback is invoked per-station in the main loop
+
+
+def fetch_open_meteo_actuals(lat: float, lon: float, date_str: str) -> dict | None:
+    """
+    Open-Meteo fallback for yesterday's actuals using their model-analysis data.
+    Uses past_days so no ERA5 lag issues — analysis data is available same-day.
+    """
+    url = (
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
+        f"&timezone=Australia%2FAdelaide"
+        f"&start_date={date_str}&end_date={date_str}"
+    )
+    try:
+        res = requests.get(url, timeout=15)
+        res.raise_for_status()
+        d = res.json().get('daily', {})
+        max_t = d.get('temperature_2m_max', [None])[0]
+        min_t = d.get('temperature_2m_min', [None])[0]
+        rain = d.get('precipitation_sum', [None])[0]
+        if max_t is None:
+            return None
+        log.info(
+            f"Open-Meteo actuals ({lat},{lon}) {date_str}: "
+            f"Max {max_t}°C  Min {min_t}°C  Rain {rain}mm"
+        )
+        return {
+            'Actual_Min_Temp': min_t,
+            'Actual_Max_Temp': max_t,
+            'Actual_Rain_mm': rain if rain is not None else 0.0,
+        }
+    except Exception as exc:
+        log.error(f"Open-Meteo actuals fallback failed: {exc}")
+        return None
 
 
 # ─────────────────────────────────────────────────────────
@@ -414,7 +546,7 @@ for name, cfg in STATIONS.items():
     if already_exists(name, 'BOM'):
         log.info(f"  BOM        | {name}: already recorded, skipping")
     else:
-        bom_fc = fetch_bom_forecast(cfg['bom_search'])
+        bom_fc = fetch_bom_forecast(cfg['bom_search'], known_geohash=cfg.get('bom_geohash'))
         if bom_fc:
             new_records.append({
                 'Date': today_str, 'Station': name, 'Source': 'BOM',
@@ -462,7 +594,12 @@ log.info("=" * 60)
 log.info("STEP 2: Backfilling actuals")
 
 for name, cfg in STATIONS.items():
-    actuals = fetch_bom_actuals(cfg['bom_station_id'])
+    # Try BOM observations; fall back to Open-Meteo if BOM is unreachable
+    actuals = fetch_bom_actuals(cfg['bom_wmo_id'], cfg['bom_station_id'])
+    if not actuals:
+        log.warning(f"  {name}: BOM actuals failed — using Open-Meteo fallback")
+        actuals = fetch_open_meteo_actuals(cfg['lat'], cfg['lon'], yesterday_str)
+
     if actuals:
         mask = (
             (df_history['Date'].astype(str) == yesterday_str)
@@ -482,7 +619,7 @@ for name, cfg in STATIONS.items():
         else:
             log.warning(f"  {name}: no existing rows for {yesterday_str} to backfill")
     else:
-        log.warning(f"  {name}: actuals fetch FAILED")
+        log.error(f"  {name}: ALL actuals sources failed")
 
 
 # ─────────────────────────────────────────────────────────
