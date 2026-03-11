@@ -500,7 +500,8 @@ with tab_leader:
 
     st.subheader(f"🏆 Last {days_window} Days — {selected_station}")
 
-    cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_window)
+    # Use Adelaide time so "last N days" is correct regardless of server timezone
+    cutoff = pd.Timestamp.now(tz="Australia/Adelaide").tz_localize(None) - pd.Timedelta(days=days_window)
     recent = df_eval[df_eval["Date"] >= cutoff] if not df_eval.empty else pd.DataFrame()
 
     if recent.empty:
@@ -673,6 +674,10 @@ with tab_trend:
 
         temp_min_v = df_eval["Actual_Max_Temp"].min()
         temp_max_v = df_eval["Actual_Max_Temp"].max()
+        # If only one data point, extend the diagonal slightly so it renders
+        if temp_min_v == temp_max_v:
+            temp_min_v -= 1
+            temp_max_v += 1
 
         fig_scatter = px.scatter(
             df_eval,

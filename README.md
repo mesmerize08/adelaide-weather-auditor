@@ -34,7 +34,7 @@ A fully automated weather forecast accuracy tracker for Adelaide, South Australi
 | Source | Method | Notes |
 |---|---|---|
 | **BOM** | `api.weather.bom.gov.au` JSON API | Geohash-based location lookup; Mt Lofty uses hardcoded geohash `r1fy9t` |
-| **Weatherzone** | Playwright (headless Chromium) | React SPA behind Cloudflare — plain HTTP is blocked; Playwright renders the page and intercepts XHR JSON. All 3 stations share the Adelaide city URL so only one browser session is launched |
+| **Weatherzone** | Scrapling `StealthyFetcher` → Playwright → requests | React SPA; scraper attempts three methods in order. Scrapling uses a fingerprint-spoofed real browser. All 3 stations share the Adelaide city URL so only one browser session is launched |
 | **Open-Meteo** | Free REST API | No key required; `precipitation_sum` used as both rain min and max (single point estimate) |
 
 ### Actuals
@@ -147,6 +147,7 @@ The app detects whether it's running locally (reads `weather_history.csv`) or on
 ## Known limitations
 
 - **Weatherzone is city-level only** — all three stations receive the same WZ Adelaide city forecast (WZ does not publish station-level forecasts)
+- **Weatherzone scraping may break** — if the site's structure changes or anti-bot measures escalate, the three-method fallback chain (Scrapling → Playwright → requests) may all fail; logged clearly in GitHub Actions output
 - **Open-Meteo rain range** — Open-Meteo returns a single `precipitation_sum` value, so its rain min and max are identical; this means its "rain range hit rate" measures exact correctness rather than range coverage
 - **BOM observations may be geo-blocked** from GitHub Actions IPs — Open-Meteo historical data is used as an automatic fallback
 - **Mt Lofty BOM forecast** — BOM's location search does not return Mt Lofty (it is a summit, not a suburb); a hardcoded geohash (`r1fy9t`) is used directly

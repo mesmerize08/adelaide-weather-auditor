@@ -136,8 +136,9 @@ def validate_forecast(data: dict, source: str, station: str) -> bool:
         log.warning(f"Validation [{source}|{station}]: Max_Temp={max_t} outside [0,55] — skipping")
         return False
     if min_t is not None:
-        if not (0 <= min_t <= 55):
-            log.warning(f"Validation [{source}|{station}]: Min_Temp={min_t} outside [0,55] — skipping")
+        # Min can be negative — Mt Lofty reaches ~0°C in winter; allow down to -15°C
+        if not (-15 <= min_t <= 45):
+            log.warning(f"Validation [{source}|{station}]: Min_Temp={min_t} outside [-15,45] — skipping")
             return False
         if min_t > max_t:
             log.warning(f"Validation [{source}|{station}]: Min_Temp={min_t} > Max_Temp={max_t} — skipping")
@@ -781,7 +782,9 @@ def fetch_bom_actuals(wmo_id: str, station_id: str) -> dict | None:
                 continue
 
             # rain_trace = cumulative mm since 9am local time
-            rain_raw = str(data[0].get('rain_trace', '-')).strip()
+            # Use readings[0] (already sliced) — we know it's non-empty because
+            # temps check above would have continued if readings were empty.
+            rain_raw = str(readings[0].get('rain_trace', '-')).strip()
             if rain_raw in ('-', '', 'None'):
                 rain_mm = 0.0
             elif rain_raw.lower() == 'trace':
