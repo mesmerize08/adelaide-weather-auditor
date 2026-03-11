@@ -297,9 +297,13 @@ def scrape_weatherzone(url: str) -> dict | None:
 
 def _scrape_weatherzone_scrapling(url: str) -> dict | None:
     """
-    Use Scrapling's StealthyFetcher to render Weatherzone and bypass Cloudflare.
-    StealthyFetcher launches a real browser with fingerprint spoofing and
-    automatically solves Cloudflare Turnstile / interstitial challenges.
+    Use Scrapling's StealthyFetcher to render Weatherzone.
+    StealthyFetcher uses fingerprint-spoofed Playwright to execute JavaScript,
+    letting the React SPA fully hydrate and load forecast data via XHR.
+
+    NOTE: solve_cloudflare=False — Weatherzone does NOT serve a Cloudflare
+    Turnstile/interstitial to GitHub Actions IPs. Passing True causes an error
+    ("No Cloudflare challenge found") and returns a near-empty page.
 
     Requires: pip install "scrapling[fetchers]" && scrapling install
     """
@@ -313,9 +317,9 @@ def _scrape_weatherzone_scrapling(url: str) -> dict | None:
         page = StealthyFetcher.fetch(
             url,
             headless=True,
-            network_idle=True,       # wait for React/XHR to settle
-            solve_cloudflare=True,   # auto-solve Turnstile / interstitial
-            disable_resources=False, # keep JS enabled for SPA rendering
+            network_idle=True,        # wait for React XHR calls to settle
+            solve_cloudflare=False,   # no CF challenge present — don't try to solve
+            disable_resources=False,  # keep JS enabled for SPA hydration
         )
 
         if not page:
@@ -324,11 +328,14 @@ def _scrape_weatherzone_scrapling(url: str) -> dict | None:
 
         # Get raw HTML from the Scrapling adaptor
         html = getattr(page, 'html', None) or str(page)
-        if not html or len(html) < 500:
-            log.warning("WZ Scrapling: response too short — likely blocked")
+        html_len = len(html) if html else 0
+        log.info(f"WZ Scrapling: page fetched ({html_len:,} chars)")
+
+        if not html or html_len < 2000:
+            # Log a snippet to help diagnose future failures
+            log.warning(f"WZ Scrapling: response too short — snippet: {repr(html[:300])}")
             return None
 
-        log.info(f"WZ Scrapling: page fetched OK ({len(html):,} chars)")
         soup = BeautifulSoup(html, 'html.parser')
 
         # Strategy 1: __NEXT_DATA__ SSR blob
@@ -336,6 +343,8 @@ def _scrape_weatherzone_scrapling(url: str) -> dict | None:
         if nd_script and nd_script.string:
             try:
                 nd = json.loads(nd_script.string)
+                # Log top-level keys so we can debug structure if needed
+                log.debug(f"WZ Scrapling __NEXT_DATA__ keys: {list(nd.keys())[:10]}")
                 fc = _find_wz_forecast(nd)
                 if fc:
                     result = _build_wz_result(fc)
@@ -357,7 +366,7 @@ def _scrape_weatherzone_scrapling(url: str) -> dict | None:
             except Exception:
                 pass
 
-        # Strategy 3: rendered DOM text regex
+        # Strategy 3: rendered DOM text regex (handles "High: 23°C" / "Low: 14°C" format)
         result = _extract_wz_from_text(soup.get_text(separator=' '))
         if result:
             log.info(f"WZ Scrapling DOM text: Max {result['Max_Temp']}°C")
@@ -415,7 +424,10 @@ def _scrape_weatherzone_playwright(url: str) -> dict | None:
             )
             page = context.new_page()
 
-            # ── Intercept JSON API calls made by the React app ────
+            # ── Intercept ALL JSON API calls made by the React app ──
+            # Weatherzone loads forecast data via internal XHR after hydration.
+            # We don't filter by URL keyword because WZ's API endpoint names are
+            # unknown — capture everything and search each payload for forecast data.
             api_responses = []
 
             def _on_response(response):
@@ -424,24 +436,22 @@ def _scrape_weatherzone_playwright(url: str) -> dict | None:
                 ct = response.headers.get('content-type', '')
                 if 'json' not in ct:
                     return
-                url_lower = response.url.lower()
-                # Capture any JSON response that looks weather-related
-                if any(k in url_lower for k in ('forecast', 'weather', 'daily', 'location')):
-                    try:
-                        api_responses.append(response.json())
-                    except Exception:
-                        pass
+                try:
+                    api_responses.append(response.json())
+                except Exception:
+                    pass
 
             page.on('response', _on_response)
 
             # ── Load the page ──────────────────────────────────────
             try:
-                page.goto(url, wait_until='networkidle', timeout=35_000)
+                page.goto(url, wait_until='networkidle', timeout=45_000)
             except PWTimeout:
                 log.warning("WZ Playwright: networkidle timeout — retrying with domcontentloaded")
                 try:
                     page.goto(url, wait_until='domcontentloaded', timeout=20_000)
-                    page.wait_for_timeout(4_000)  # let React hydrate
+                    # Wait up to 12s for React to hydrate and fire data XHR calls
+                    page.wait_for_timeout(12_000)
                 except PWTimeout:
                     log.warning("WZ Playwright: domcontentloaded timeout — aborting")
                     browser.close()
@@ -450,10 +460,13 @@ def _scrape_weatherzone_playwright(url: str) -> dict | None:
             log.info(f"WZ Playwright: page loaded OK ({page.url})")
 
             # ── Strategy 1: window.__NEXT_DATA__ ──────────────────
+            # WZ's __NEXT_DATA__ typically contains routing metadata only,
+            # not forecast data (which is loaded via client-side XHR).
             try:
                 nd_raw = page.evaluate('() => JSON.stringify(window.__NEXT_DATA__ || null)')
                 if nd_raw:
                     nd = json.loads(nd_raw)
+                    log.debug(f"WZ Playwright __NEXT_DATA__ top-keys: {list(nd.keys())[:8]}")
                     fc = _find_wz_forecast(nd)
                     if fc:
                         result = _build_wz_result(fc)
@@ -461,11 +474,11 @@ def _scrape_weatherzone_playwright(url: str) -> dict | None:
                             log.info(f"WZ Playwright __NEXT_DATA__: Max {result['Max_Temp']}°C")
                             browser.close()
                             return result
-                    log.debug("WZ Playwright: __NEXT_DATA__ present but no forecast found inside")
             except Exception as exc:
                 log.debug(f"WZ Playwright __NEXT_DATA__ error: {exc}")
 
             # ── Strategy 2: intercepted API responses ──────────────
+            log.info(f"WZ Playwright: {len(api_responses)} JSON responses intercepted")
             for payload in api_responses:
                 fc = _find_wz_forecast(payload)
                 if fc:
@@ -476,14 +489,21 @@ def _scrape_weatherzone_playwright(url: str) -> dict | None:
                         return result
 
             # ── Strategy 3: rendered DOM text ──────────────────────
+            # Handles WZ HTML format: "High: 23°C", "Low: 14°C", "Chance of Rain: 5%"
             try:
                 rendered_html = page.content()
                 soup = BeautifulSoup(rendered_html, 'html.parser')
-                result = _extract_wz_from_text(soup.get_text(separator=' '))
+                page_text = soup.get_text(separator=' ')
+                result = _extract_wz_from_text(page_text)
                 if result:
                     log.info(f"WZ Playwright DOM text: Max {result['Max_Temp']}°C")
                     browser.close()
                     return result
+                # Log a snippet to help diagnose what the page actually contains
+                log.warning(
+                    f"WZ Playwright DOM snippet: "
+                    f"{' '.join(page_text.split()[:60])}"
+                )
             except Exception as exc:
                 log.debug(f"WZ Playwright DOM error: {exc}")
 
@@ -510,14 +530,19 @@ def _find_wz_forecast(data, _depth: int = 0):
         return None
 
     if isinstance(data, dict):
-        # Keys that unambiguously indicate a per-day forecast entry
+        # All known max-temperature key variants across WZ's JSON responses
         temp_keys = {
-            'maxTemp', 'max_temp', 'tempMax', 'highTemperature',
-            'maximumTemperature', 'temperature_max',
+            # camelCase variants
+            'maxTemp', 'tempMax', 'highTemp', 'highTemperature',
+            'maximumTemperature', 'max_temp', 'temperature_max',
+            # short keys used in some WZ API payloads
+            'high', 'max',
         }
-        if temp_keys & set(data.keys()):
-            val = next(data[k] for k in temp_keys if k in data)
-            # Sanity-check: Adelaide max temps are 0–50°C
+        matched = temp_keys & set(data.keys())
+        if matched:
+            key = next(iter(matched))
+            val = data[key]
+            # Sanity-check: Adelaide max temps are 0–55°C; exclude generic "max" = 100 etc.
             if val is not None and 0 <= safe_float(val, -999) <= 55:
                 return data
 
@@ -548,15 +573,17 @@ def _build_wz_result(fc: dict) -> dict | None:
     """Convert a raw Weatherzone forecast dict to our standard result shape."""
     # Use _first_not_none so that a legitimate 0°C value isn't skipped by `or`
     max_t = _first_not_none(
-        fc, 'maxTemp', 'max_temp', 'tempMax',
+        fc, 'maxTemp', 'max_temp', 'tempMax', 'highTemp',
         'highTemperature', 'maximumTemperature', 'temperature_max',
+        'high', 'max',
     )
     if max_t is None:
         return None
 
     min_t = _first_not_none(
-        fc, 'minTemp', 'min_temp', 'tempMin',
+        fc, 'minTemp', 'min_temp', 'tempMin', 'lowTemp',
         'lowTemperature', 'minimumTemperature', 'temperature_min',
+        'low', 'min',
     )
 
     rain_prob = _first_not_none(
@@ -623,12 +650,13 @@ def _scrape_weatherzone_requests(url: str) -> dict | None:
 
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # Try __NEXT_DATA__ (works if server does SSR)
+        # Try __NEXT_DATA__ (routing/config only — forecast data is loaded client-side)
         nd_script = soup.find('script', id='__NEXT_DATA__')
         log.info(f"WZ requests: __NEXT_DATA__ present = {nd_script is not None}")
         if nd_script:
             try:
                 nd = json.loads(nd_script.string or '')
+                log.debug(f"WZ requests __NEXT_DATA__ top-keys: {list(nd.keys())[:8]}")
                 fc = _find_wz_forecast(nd)
                 if fc:
                     result = _build_wz_result(fc)
@@ -662,16 +690,35 @@ def _scrape_weatherzone_requests(url: str) -> dict | None:
 
 
 def _extract_wz_from_text(page_text: str) -> dict | None:
-    """Regex-based extraction from plain rendered text. Last resort."""
-    max_match = re.search(r'\bMax(?:imum)?\s*:?\s*(\d{1,2})\s*°', page_text, re.IGNORECASE)
-    min_match = re.search(r'\bMin(?:imum)?\s*:?\s*(\d{1,2})\s*°', page_text, re.IGNORECASE)
+    """
+    Regex-based extraction from rendered DOM text.
+    Handles both Weatherzone's rendered HTML format and generic weather text:
+      Weatherzone HTML:  "High: 23°C"  "Low: 14°C"
+                         "Chance of Rain: 5%"  "Amount of Rain: < 1mm"
+      Generic fallback:  "Max: 23°C"  "Min: 14°C"  "40% chance of rain"
+    """
+    # Max temp: "High: 23°C" OR "Max: 23°C" OR "Max 23°"
+    max_match = re.search(
+        r'\b(?:High|Max(?:imum)?)\s*:?\s*(\d{1,2})\s*°', page_text, re.IGNORECASE
+    )
+    # Min temp: "Low: 14°C" OR "Min: 14°C"
+    min_match = re.search(
+        r'\b(?:Low|Min(?:imum)?)\s*:?\s*(\d{1,2})\s*°', page_text, re.IGNORECASE
+    )
+    # Rain prob: "Chance of Rain: 5%" OR "40% chance"
     rain_prob_match = re.search(
-        r'(\d{1,3})\s*%\s*(?:chance|probability)', page_text, re.IGNORECASE
+        r'(?:Chance of Rain\s*:?\s*(\d{1,3})|(\d{1,3})\s*%\s*(?:chance|probability))',
+        page_text, re.IGNORECASE
     )
+    # Rain amount: "< 1mm" OR "1–5mm" OR "2mm"
     rain_range_match = re.search(
-        r'(\d+(?:\.\d+)?)\s*[-–to]+\s*(\d+(?:\.\d+)?)\s*mm', page_text, re.IGNORECASE
+        r'(?:Amount of Rain\s*:?\s*)?<?\s*(\d+(?:\.\d+)?)\s*[-–to]+\s*(\d+(?:\.\d+)?)\s*mm',
+        page_text, re.IGNORECASE
     )
-    rain_single_match = re.search(r'(\d+(?:\.\d+)?)\s*mm', page_text, re.IGNORECASE)
+    rain_single_match = re.search(
+        r'(?:Amount of Rain\s*:?\s*)?<?\s*(\d+(?:\.\d+)?)\s*mm',
+        page_text, re.IGNORECASE
+    )
 
     if not max_match:
         return None
@@ -685,11 +732,16 @@ def _extract_wz_from_text(page_text: str) -> dict | None:
         rain_min_v = rain_max_v = 0.0
 
     max_t = safe_float(max_match.group(1))
-    log.info(f"WZ text regex: Max {max_t}°C")
+    # rain_prob has two capture groups: group(1)="Chance of Rain: X", group(2)="X% chance"
+    rain_prob_val = None
+    if rain_prob_match:
+        rain_prob_val = safe_float(rain_prob_match.group(1) or rain_prob_match.group(2))
+
+    log.info(f"WZ text regex: Max {max_t}°C  Min {min_match.group(1) if min_match else '?'}°C  Rain {rain_prob_val}%")
     return {
         'Min_Temp': safe_float(min_match.group(1)) if min_match else None,
         'Max_Temp': max_t,
-        'Rain_Prob': safe_float(rain_prob_match.group(1)) if rain_prob_match else None,
+        'Rain_Prob': rain_prob_val,
         'Rain_Min': rain_min_v,
         'Rain_Max': rain_max_v,
     }
