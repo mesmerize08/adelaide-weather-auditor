@@ -348,7 +348,7 @@ def _scrape_weatherzone_scrapling(url: str) -> dict | None:
                 log.debug(f"WZ Scrapling __NEXT_DATA__ keys: {list(nd.keys())[:10]}")
                 fc = _find_wz_forecast(nd)
                 if fc:
-                    result = _build_wz_result(fc)
+                    result = _build_wz_result(fc, context=nd)
                     if result:
                         log.info(f"WZ Scrapling __NEXT_DATA__: Max {result['Max_Temp']}°C")
                         return result
@@ -358,9 +358,10 @@ def _scrape_weatherzone_scrapling(url: str) -> dict | None:
         # Strategy 2: any application/json script tags
         for tag in soup.find_all('script', type='application/json'):
             try:
-                fc = _find_wz_forecast(json.loads(tag.string or ''))
+                raw = json.loads(tag.string or '')
+                fc = _find_wz_forecast(raw)
                 if fc:
-                    result = _build_wz_result(fc)
+                    result = _build_wz_result(fc, context=raw)
                     if result:
                         log.info(f"WZ Scrapling JSON tag: Max {result['Max_Temp']}°C")
                         return result
@@ -470,7 +471,7 @@ def _scrape_weatherzone_playwright(url: str) -> dict | None:
                     log.debug(f"WZ Playwright __NEXT_DATA__ top-keys: {list(nd.keys())[:8]}")
                     fc = _find_wz_forecast(nd)
                     if fc:
-                        result = _build_wz_result(fc)
+                        result = _build_wz_result(fc, context=nd)
                         if result:
                             log.info(f"WZ Playwright __NEXT_DATA__: Max {result['Max_Temp']}°C")
                             browser.close()
@@ -483,7 +484,7 @@ def _scrape_weatherzone_playwright(url: str) -> dict | None:
             for payload in api_responses:
                 fc = _find_wz_forecast(payload)
                 if fc:
-                    result = _build_wz_result(fc)
+                    result = _build_wz_result(fc, context=payload)
                     if result:
                         log.info(f"WZ Playwright API intercept: Max {result['Max_Temp']}°C")
                         browser.close()
@@ -570,8 +571,77 @@ def _first_not_none(d: dict, *keys):
     return None
 
 
-def _build_wz_result(fc: dict) -> dict | None:
-    """Convert a raw Weatherzone forecast dict to our standard result shape."""
+def _find_wz_rain_amount(data, _depth: int = 0) -> dict | None:
+    """
+    Separately search the full WZ JSON tree for rain amount data.
+    Used to supplement temperature-only dicts returned by _find_wz_forecast —
+    WZ sometimes stores temperature and rain amount in sibling structures, so
+    the temperature-containing dict has no rain keys.
+
+    Returns a dict with 'min', 'max', 'prob' (all may be None), or None.
+    """
+    if _depth > 10:
+        return None
+
+    if isinstance(data, dict):
+        # Nested rain container: {"rain": {"amount": {"min":5,"max":10}, "chance":90}}
+        for rain_key in ('rain', 'rainfall', 'precipitation'):
+            rain_info = data.get(rain_key)
+            if not isinstance(rain_info, dict):
+                continue
+            amount = rain_info.get('amount') or {}
+            if isinstance(amount, dict):
+                min_v = amount.get('min')
+                max_v = amount.get('max')
+                if min_v is not None or max_v is not None:
+                    return {
+                        'min': safe_float(min_v, 0.0),
+                        'max': safe_float(max_v, 0.0),
+                        'prob': safe_float(
+                            rain_info.get('chance') or rain_info.get('probability')
+                        ),
+                    }
+            elif isinstance(amount, (int, float)):
+                return {
+                    'min': float(amount), 'max': float(amount),
+                    'prob': safe_float(
+                        rain_info.get('chance') or rain_info.get('probability')
+                    ),
+                }
+
+        # Flat rain amount keys: {"rainMin": 5, "rainMax": 10}
+        min_v = _first_not_none(data, 'rainMin', 'precipMin', 'rain_min', 'precipitationMin')
+        max_v = _first_not_none(data, 'rainMax', 'precipMax', 'rain_max', 'precipitationMax')
+        if min_v is not None or max_v is not None:
+            return {
+                'min': safe_float(min_v, 0.0),
+                'max': safe_float(max_v, safe_float(min_v, 0.0)),
+                'prob': None,
+            }
+
+        for v in data.values():
+            found = _find_wz_rain_amount(v, _depth + 1)
+            if found:
+                return found
+
+    elif isinstance(data, list):
+        for item in data[:5]:
+            found = _find_wz_rain_amount(item, _depth + 1)
+            if found:
+                return found
+
+    return None
+
+
+def _build_wz_result(fc: dict, context=None) -> dict | None:
+    """
+    Convert a raw Weatherzone forecast dict to our standard result shape.
+
+    `context` is the full raw JSON from which `fc` was extracted.
+    WZ sometimes stores rain amount in a sibling structure to the temperature
+    dict, so if rain amount is missing from `fc`, we search `context` as a
+    fallback via _find_wz_rain_amount.
+    """
     # Use _first_not_none so that a legitimate 0°C value isn't skipped by `or`
     max_t = _first_not_none(
         fc, 'maxTemp', 'max_temp', 'tempMax', 'highTemp',
@@ -610,6 +680,20 @@ def _build_wz_result(fc: dict) -> dict | None:
         rain_min_v = safe_float(_first_not_none(fc, 'rainMin', 'precipMin', 'rain_min'), 0.0)
         rain_max_v = safe_float(_first_not_none(fc, 'rainMax', 'precipMax', 'rain_max'), rain_min_v)
 
+    # If the forecast dict had no rain amount, search the broader JSON context.
+    # This handles the case where WZ stores temperature and rain in sibling structures.
+    if rain_min_v == 0.0 and rain_max_v == 0.0 and context is not None:
+        rain_supp = _find_wz_rain_amount(context)
+        if rain_supp:
+            rain_min_v = rain_supp['min']
+            rain_max_v = rain_supp['max']
+            if rain_prob is None and rain_supp['prob'] is not None:
+                rain_prob = rain_supp['prob']
+            log.info(
+                f"WZ: rain amount supplemented from context: "
+                f"{rain_min_v}–{rain_max_v}mm (prob={rain_prob}%)"
+            )
+
     return {
         'Min_Temp': safe_float(min_t),
         'Max_Temp': safe_float(max_t),
@@ -638,9 +722,10 @@ def _scrape_weatherzone_requests(url: str) -> dict | None:
         # Direct JSON response
         if 'json' in content_type:
             try:
-                fc = _find_wz_forecast(res.json())
+                raw = res.json()
+                fc = _find_wz_forecast(raw)
                 if fc:
-                    return _build_wz_result(fc)
+                    return _build_wz_result(fc, context=raw)
             except Exception:
                 pass
             return None
@@ -660,7 +745,7 @@ def _scrape_weatherzone_requests(url: str) -> dict | None:
                 log.debug(f"WZ requests __NEXT_DATA__ top-keys: {list(nd.keys())[:8]}")
                 fc = _find_wz_forecast(nd)
                 if fc:
-                    result = _build_wz_result(fc)
+                    result = _build_wz_result(fc, context=nd)
                     if result:
                         log.info(f"WZ requests __NEXT_DATA__: Max {result['Max_Temp']}°C")
                         return result
@@ -670,9 +755,10 @@ def _scrape_weatherzone_requests(url: str) -> dict | None:
         # Try any application/json script tags
         for tag in soup.find_all('script', type='application/json'):
             try:
-                fc = _find_wz_forecast(json.loads(tag.string or ''))
+                raw = json.loads(tag.string or '')
+                fc = _find_wz_forecast(raw)
                 if fc:
-                    result = _build_wz_result(fc)
+                    result = _build_wz_result(fc, context=raw)
                     if result:
                         log.info(f"WZ requests JSON tag: Max {result['Max_Temp']}°C")
                         return result

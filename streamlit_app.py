@@ -292,6 +292,12 @@ if not df_eval.empty:
     df_eval["Rain_Day"] = df_eval["Actual_Rain_mm"] > 0
     # Did source predict rain (prob > 30%)?
     df_eval["Rain_Predicted"] = df_eval["Forecast_Rain_Prob"].fillna(0) > 30
+    # Brier Score term per row: (forecast_prob/100 - outcome)²
+    # Requires a non-null probability; rows without one are excluded from the mean.
+    df_eval["Brier_Term"] = (
+        df_eval["Forecast_Rain_Prob"].dropna() / 100
+        - df_eval.loc[df_eval["Forecast_Rain_Prob"].notna(), "Rain_Day"].astype(float)
+    ) ** 2
 
 # ─────────────────────────────────────────────────────────
 # Tabs
@@ -587,6 +593,10 @@ with tab_leader:
             misses = grp[grp["Rain_Day"] & ~grp["Rain_Predicted"]].shape[0]
             miss_rate = round(100 * misses / rain_days, 1) if rain_days > 0 else None
 
+            # Brier Score: mean (prob/100 - outcome)² across rows with a probability
+            brier_grp = grp.dropna(subset=["Brier_Term"])
+            brier_score = round(brier_grp["Brier_Term"].mean(), 4) if not brier_grp.empty else None
+
             rain_stats_rows.append({
                 "Source": src,
                 "Evaluated Days": total,
@@ -595,6 +605,7 @@ with tab_leader:
                 "Hit Rate (rain days) %": rain_hit_rate,
                 "False Alarm Rate %": fa_rate,
                 "Miss Rate %": miss_rate,
+                "Brier Score ↓": brier_score,
             })
 
         if rain_stats_rows:
@@ -603,7 +614,11 @@ with tab_leader:
             st.caption(
                 "**Hit Rate** = actual rain fell within forecast range on rain days.  "
                 "**False Alarm** = predicted rain (>30% prob) but it stayed dry.  "
-                "**Miss Rate** = rain actually fell but wasn't predicted."
+                "**Miss Rate** = rain actually fell but wasn't predicted.  "
+                "**Brier Score** = mean (forecast prob − outcome)² — lower is better. "
+                "Rewards confident correct predictions (0% on dry days, 100% on rain days) "
+                "and penalises hedging (e.g. always predicting 5–10% 'just in case'). "
+                "Perfect score = 0.00, always-wrong = 1.00."
             )
         else:
             st.info("Rain accuracy breakdown available once sufficient data is collected.")
