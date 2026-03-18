@@ -292,11 +292,13 @@ if not df_eval.empty:
     df_eval["Rain_Day"] = df_eval["Actual_Rain_mm"] > 0
     # Did source predict rain (prob > 30%)?
     df_eval["Rain_Predicted"] = df_eval["Forecast_Rain_Prob"].fillna(0) > 30
-    # Brier Score term per row: (forecast_prob/100 - outcome)²
-    # Requires a non-null probability; rows without one are excluded from the mean.
-    df_eval["Brier_Term"] = (
-        df_eval["Forecast_Rain_Prob"].dropna() / 100
-        - df_eval.loc[df_eval["Forecast_Rain_Prob"].notna(), "Rain_Day"].astype(float)
+    # Brier Score term per row: (forecast_prob/100 − outcome)²
+    # Only rows with a non-null probability contribute; rest stay NaN.
+    has_prob = df_eval["Forecast_Rain_Prob"].notna()
+    df_eval["Brier_Term"] = float("nan")
+    df_eval.loc[has_prob, "Brier_Term"] = (
+        df_eval.loc[has_prob, "Forecast_Rain_Prob"] / 100
+        - df_eval.loc[has_prob, "Rain_Day"].astype(float)
     ) ** 2
 
 # ─────────────────────────────────────────────────────────

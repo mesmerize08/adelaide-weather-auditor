@@ -344,8 +344,14 @@ def _scrape_weatherzone_scrapling(url: str) -> dict | None:
         if nd_script and nd_script.string:
             try:
                 nd = json.loads(nd_script.string)
-                # Log top-level keys so we can debug structure if needed
                 log.debug(f"WZ Scrapling __NEXT_DATA__ keys: {list(nd.keys())[:10]}")
+                # Try the direct pageProps parser first — avoids mistaking the
+                # temperature sub-dict {"min":X,"max":Y} for a full forecast entry.
+                result = _parse_wz_page_props(nd)
+                if result:
+                    log.info(f"WZ Scrapling pageProps: Max {result['Max_Temp']}°C")
+                    return result
+                # Fallback to generic recursive search
                 fc = _find_wz_forecast(nd)
                 if fc:
                     result = _build_wz_result(fc, context=nd)
@@ -462,13 +468,16 @@ def _scrape_weatherzone_playwright(url: str) -> dict | None:
             log.info(f"WZ Playwright: page loaded OK ({page.url})")
 
             # ── Strategy 1: window.__NEXT_DATA__ ──────────────────
-            # WZ's __NEXT_DATA__ typically contains routing metadata only,
-            # not forecast data (which is loaded via client-side XHR).
             try:
                 nd_raw = page.evaluate('() => JSON.stringify(window.__NEXT_DATA__ || null)')
                 if nd_raw:
                     nd = json.loads(nd_raw)
                     log.debug(f"WZ Playwright __NEXT_DATA__ top-keys: {list(nd.keys())[:8]}")
+                    result = _parse_wz_page_props(nd)
+                    if result:
+                        log.info(f"WZ Playwright pageProps: Max {result['Max_Temp']}°C")
+                        browser.close()
+                        return result
                     fc = _find_wz_forecast(nd)
                     if fc:
                         result = _build_wz_result(fc, context=nd)
@@ -569,6 +578,76 @@ def _first_not_none(d: dict, *keys):
         if v is not None:
             return v
     return None
+
+
+def _parse_wz_page_props(nd: dict) -> dict | None:
+    """
+    Directly parse Weatherzone's known __NEXT_DATA__ pageProps structure.
+
+    WZ embeds today's forecast at nd['props']['pageProps']['forecast'] with:
+      temperature:  {"min": 18, "max": 26}
+      chanceOfRain: "50%"  |  "< 5%"  |  "No rain"
+      amountOfRain: "5-10mm"  |  "5–10mm"  |  "< 1mm"  |  "8mm"
+
+    This is called BEFORE the generic _find_wz_forecast so we never accidentally
+    return the bare temperature sub-dict (which has no rain keys).
+    """
+    try:
+        fc = nd['props']['pageProps']['forecast']
+    except (KeyError, TypeError):
+        return None
+
+    if not isinstance(fc, dict):
+        return None
+
+    temp = fc.get('temperature', {})
+    if not isinstance(temp, dict):
+        return None
+
+    max_t = safe_float(temp.get('max'))
+    min_t = safe_float(temp.get('min'))
+    if max_t is None or not (0 <= max_t <= 55):
+        return None
+
+    # Rain probability: "50%" | "< 5%" — extract the first integer
+    rain_prob = None
+    chance_str = str(fc.get('chanceOfRain') or '')
+    if chance_str:
+        m = re.search(r'(\d+)', chance_str)
+        if m:
+            rain_prob = safe_float(m.group(1))
+
+    # Rain amount: "5-10mm", "5–10mm", "< 1mm", "8mm", "0mm"
+    rain_min_v = 0.0
+    rain_max_v = 0.0
+    amount_str = str(fc.get('amountOfRain') or '').strip()
+    if amount_str:
+        range_m = re.search(
+            r'(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*mm', amount_str, re.IGNORECASE
+        )
+        single_m = re.search(r'(\d+(?:\.\d+)?)\s*mm', amount_str, re.IGNORECASE)
+        if range_m:
+            rain_min_v = safe_float(range_m.group(1), 0.0)
+            rain_max_v = safe_float(range_m.group(2), 0.0)
+        elif single_m:
+            val = safe_float(single_m.group(1), 0.0)
+            # "< 1mm" means 0–val; plain "8mm" means 8–8
+            rain_min_v = 0.0 if '<' in amount_str else val
+            rain_max_v = val
+
+    log.info(
+        f"WZ pageProps: Max {max_t}°C  Min {min_t}°C  "
+        f"Rain {rain_min_v}–{rain_max_v}mm ({rain_prob}%)  "
+        f"[chanceOfRain={fc.get('chanceOfRain')!r}  "
+        f"amountOfRain={fc.get('amountOfRain')!r}]"
+    )
+    return {
+        'Min_Temp': min_t,
+        'Max_Temp': max_t,
+        'Rain_Prob': rain_prob,
+        'Rain_Min': rain_min_v,
+        'Rain_Max': rain_max_v,
+    }
 
 
 def _find_wz_rain_amount(data, _depth: int = 0) -> dict | None:
@@ -736,13 +815,17 @@ def _scrape_weatherzone_requests(url: str) -> dict | None:
 
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # Try __NEXT_DATA__ (routing/config only — forecast data is loaded client-side)
+        # Try __NEXT_DATA__
         nd_script = soup.find('script', id='__NEXT_DATA__')
         log.info(f"WZ requests: __NEXT_DATA__ present = {nd_script is not None}")
         if nd_script:
             try:
                 nd = json.loads(nd_script.string or '')
                 log.debug(f"WZ requests __NEXT_DATA__ top-keys: {list(nd.keys())[:8]}")
+                result = _parse_wz_page_props(nd)
+                if result:
+                    log.info(f"WZ requests pageProps: Max {result['Max_Temp']}°C")
+                    return result
                 fc = _find_wz_forecast(nd)
                 if fc:
                     result = _build_wz_result(fc, context=nd)
