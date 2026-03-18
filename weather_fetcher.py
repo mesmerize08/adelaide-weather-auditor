@@ -67,10 +67,12 @@ STATIONS = {
         'lon': 138.7083,
         'bom_wmo_id': '94693',
         'bom_station_id': '023838',
-        # BOM search API returns no result for "Mount Lofty" (summit, not a suburb).
-        # Use hardcoded geohash (r1fy9t) — verified approximate for -34.98, 138.71.
+        # BOM search API returns no SA result for "Mount Lofty".
+        # r1f9h2h computed from exact coords (-34.98, 138.7083); resolves to
+        # "Crafers" grid point at (-34.9798, 138.7086) — essentially the summit.
+        # Previous geohash r1fy9t was wrong: it resolved to "Tothill Belt" 100km north.
         'bom_search': 'Mount Lofty',
-        'bom_geohash': 'r1fy9t',
+        'bom_geohash': 'r1f9h2h',
         # Weatherzone: summit-specific forecast page (-34.985, 138.709, 627m elevation)
         'wz_url': 'https://www.weatherzone.com.au/sa/mount-lofty-ranges/mount-lofty',
     },
