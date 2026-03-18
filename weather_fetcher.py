@@ -48,7 +48,7 @@ STATIONS = {
         # BOM forecast API: confirmed geohash from live run (r1f93ck)
         'bom_search': 'Adelaide',
         'bom_geohash': 'r1f93ck',
-        # Weatherzone: all three stations use Adelaide city forecast (WZ is city-level)
+        # Weatherzone: station-specific forecast pages (verified via sitemap + live test)
         'wz_url': 'https://www.weatherzone.com.au/sa/adelaide/adelaide',
     },
     'Airport': {
@@ -59,7 +59,8 @@ STATIONS = {
         # BOM forecast API: confirmed geohash from live run (r1f90q5)
         'bom_search': 'Adelaide Airport',
         'bom_geohash': 'r1f90q5',
-        'wz_url': 'https://www.weatherzone.com.au/sa/adelaide/adelaide',
+        # Weatherzone: Adelaide Airport has its own forecast page (-34.938, 138.536)
+        'wz_url': 'https://www.weatherzone.com.au/sa/adelaide/adelaide-airport',
     },
     'Mt Lofty': {
         'lat': -34.9800,
@@ -70,7 +71,8 @@ STATIONS = {
         # Use hardcoded geohash (r1fy9t) — verified approximate for -34.98, 138.71.
         'bom_search': 'Mount Lofty',
         'bom_geohash': 'r1fy9t',
-        'wz_url': 'https://www.weatherzone.com.au/sa/adelaide/adelaide',
+        # Weatherzone: summit-specific forecast page (-34.985, 138.709, 627m elevation)
+        'wz_url': 'https://www.weatherzone.com.au/sa/mount-lofty-ranges/mount-lofty',
     },
 }
 
@@ -609,15 +611,18 @@ def _parse_wz_page_props(nd: dict) -> dict | None:
     if max_t is None or not (0 <= max_t <= 55):
         return None
 
-    # Rain probability: "50%" | "< 5%" — extract the first integer
+    # Rain probability: "50%" | "< 5%" | "No rain" / "Nil" → float or 0.0
     rain_prob = None
-    chance_str = str(fc.get('chanceOfRain') or '')
+    chance_str = str(fc.get('chanceOfRain') or '').strip()
     if chance_str:
-        m = re.search(r'(\d+)', chance_str)
-        if m:
-            rain_prob = safe_float(m.group(1))
+        if chance_str.lower() in ('no rain', 'nil', 'none', '0%', '0'):
+            rain_prob = 0.0
+        else:
+            m = re.search(r'(\d+)', chance_str)
+            if m:
+                rain_prob = safe_float(m.group(1))
 
-    # Rain amount: "5-10mm", "5–10mm", "< 1mm", "8mm", "0mm"
+    # Rain amount: "5-10mm", "5–10mm", "< 1mm", "> 50mm", "8mm", "0mm"
     rain_min_v = 0.0
     rain_max_v = 0.0
     amount_str = str(fc.get('amountOfRain') or '').strip()
@@ -631,9 +636,16 @@ def _parse_wz_page_props(nd: dict) -> dict | None:
             rain_max_v = safe_float(range_m.group(2), 0.0)
         elif single_m:
             val = safe_float(single_m.group(1), 0.0)
-            # "< 1mm" means 0–val; plain "8mm" means 8–8
-            rain_min_v = 0.0 if '<' in amount_str else val
-            rain_max_v = val
+            if '<' in amount_str:
+                # "< 1mm" → 0 to val
+                rain_min_v = 0.0
+                rain_max_v = val
+            elif '>' in amount_str:
+                # "> 50mm" → val to 200 (open-ended heavy rain cap)
+                rain_min_v = val
+                rain_max_v = 200.0
+            else:
+                rain_min_v = rain_max_v = val
 
     log.info(
         f"WZ pageProps: Max {max_t}°C  Min {min_t}°C  "
@@ -1017,8 +1029,8 @@ def fetch_open_meteo_actuals(lat: float, lon: float, date_str: str) -> dict | No
 log.info("=" * 60)
 log.info("STEP 1: Fetching forecasts")
 
-# All 3 stations share the same Weatherzone Adelaide URL.
-# Scrape once and reuse so Playwright only launches one browser session.
+# Each station has its own Weatherzone URL. The cache deduplicates any accidental
+# repeat calls but primarily ensures each URL is fetched exactly once.
 _wz_cache: dict[str, dict | None] = {}
 
 def _get_wz(url: str) -> dict | None:
