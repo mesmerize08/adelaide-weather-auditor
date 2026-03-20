@@ -99,3 +99,4 @@ Date,Station,Source,Forecast_Min_Temp,Forecast_Max_Temp,Forecast_Rain_Prob,Forec
 2026-03-21,Airport,Weatherzone,15.0,25.0,5.0,0.0,1.0,,,
 2026-03-21,Mt Lofty,BOM,13.0,23.0,0.0,0.0,0.0,,,
 2026-03-21,Mt Lofty,Weatherzone,10.8,22.5,5.0,0.0,1.0,,,
+2026-03-21,Mt Lofty,Open-Meteo,7.6,20.6,0.0,0.0,0.0,,,
