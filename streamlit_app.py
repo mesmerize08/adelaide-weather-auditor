@@ -533,6 +533,17 @@ with tab_leader:
             .reset_index(drop=True)
         )
 
+        # Brier Score per source — join into main leaderboard table
+        brier_per_src = (
+            recent.dropna(subset=["Brier_Term"])
+            .groupby("Source")["Brier_Term"]
+            .mean()
+            .round(4)
+            .rename("Brier Score ↓")
+            .reset_index()
+        )
+        lb = lb.merge(brier_per_src, on="Source", how="left")
+
         medals = ["🥇", "🥈", "🥉"] + [""] * max(0, len(lb) - 3)
         lb.insert(0, "Rank", medals[: len(lb)])
 
@@ -546,7 +557,13 @@ with tab_leader:
             hide_index=True,
             use_container_width=True,
         )
-        st.caption("MAE = Mean Absolute Error (lower = more accurate).  Rain Hit % = actual fell within forecast range.")
+        st.caption(
+            "MAE = Mean Absolute Error (lower = more accurate).  "
+            "Rain Hit % = actual fell within forecast range.  "
+            "**Brier Score** = rain probability accuracy — lower is better "
+            "(0.00 = perfect, 1.00 = worst).  Penalises hedging (e.g. '5% every day') "
+            "and rewards confident correct calls (0% on dry days)."
+        )
 
         if len(lb) > 1:
             fig_bar = go.Figure()

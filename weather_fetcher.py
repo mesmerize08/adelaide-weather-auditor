@@ -254,12 +254,17 @@ def fetch_bom_forecast(search_term: str, known_geohash: str | None = None) -> di
             log.warning(f"BOM: Null max_temp for geohash={geohash}")
             return None
 
+        rain_min = amount_info.get('min') or 0
+        # BOM returns amount.max as None on dry days; fall back to upper_range
+        rain_max_raw = amount_info.get('max')
+        rain_max = rain_max_raw if rain_max_raw is not None else (amount_info.get('upper_range') or rain_min)
+
         return {
             'Min_Temp': today_data.get('temp_min'),
             'Max_Temp': max_temp,
             'Rain_Prob': rain_info.get('chance'),
-            'Rain_Min': amount_info.get('min') or 0,
-            'Rain_Max': amount_info.get('max') or 0,
+            'Rain_Min': rain_min,
+            'Rain_Max': rain_max,
         }
     except Exception as exc:
         log.error(f"BOM forecast '{search_term}' (geohash={geohash}): {exc}")
@@ -270,27 +275,31 @@ def scrape_weatherzone(url: str) -> dict | None:
     """
     Scrape Weatherzone Adelaide forecast.
 
-    Attempt order (each falls through to next on failure):
-      1. Scrapling StealthyFetcher — real browser + Cloudflare Turnstile solver
-      2. Playwright — headless Chromium with API response interception
-      3. requests — plain HTTP (fastest, but usually blocked by Cloudflare)
+    Attempt order:
+      1. requests — plain HTTP; Weatherzone serves a complete server-rendered
+         __NEXT_DATA__ blob (including chanceOfRain / amountOfRain) without
+         requiring JavaScript execution.  Fastest and most reliable.
+      2. Scrapling StealthyFetcher — headless browser fallback; used when
+         Cloudflare blocks plain requests (rare on current WZ infrastructure).
+      3. Playwright — second browser fallback with API response interception.
     """
-    # ── Primary: Scrapling (Cloudflare bypass) ─────────────────
-    result = _scrape_weatherzone_scrapling(url)
-    if result:
-        return result
-
-    # ── Secondary: Playwright ──────────────────────────────────
-    result = _scrape_weatherzone_playwright(url)
-    if result:
-        return result
-
-    # ── Fallback: plain HTTP ───────────────────────────────────
-    log.info("WZ: All browser methods failed — trying requests fallback")
+    # ── Primary: plain HTTP (fast, reliable, full SSR data) ───────────────
     for attempt_url in [url, url.replace('www.', 'm.')]:
         result = _scrape_weatherzone_requests(attempt_url)
         if result:
             return result
+
+    # ── Secondary: Scrapling (Cloudflare bypass) ───────────────────────────
+    log.info("WZ: plain requests failed — trying Scrapling")
+    result = _scrape_weatherzone_scrapling(url)
+    if result:
+        return result
+
+    # ── Tertiary: Playwright ───────────────────────────────────────────────
+    log.info("WZ: Scrapling failed — trying Playwright")
+    result = _scrape_weatherzone_playwright(url)
+    if result:
+        return result
 
     log.warning(f"WZ: All methods failed for {url}")
     return None
