@@ -193,6 +193,12 @@ def fetch_open_meteo(lat: float, lon: float) -> dict | None:
         res = requests.get(url, timeout=15)
         res.raise_for_status()
         d = res.json()['daily']
+        log.info(
+            f"Open-Meteo RAW ({lat},{lon}): "
+            f"max={d['temperature_2m_max'][0]}  min={d['temperature_2m_min'][0]}  "
+            f"prob={d['precipitation_probability_max'][0]}  "
+            f"precip_sum={d['precipitation_sum'][0]}"
+        )
         return {
             'Min_Temp': d['temperature_2m_min'][0],
             'Max_Temp': d['temperature_2m_max'][0],
@@ -216,29 +222,30 @@ def fetch_bom_forecast(search_term: str, known_geohash: str | None = None) -> di
         'Accept': 'application/json',
     }
 
-    geohash = known_geohash  # may be overwritten by a fresher search result
-
     try:
-        # ── Step 1: resolve geohash via search (best-effort) ──────
-        search_url = (
-            f"https://api.weather.bom.gov.au/v1/locations"
-            f"?search={requests.utils.quote(search_term)}"
-        )
-        search_res = requests.get(search_url, headers=api_headers, timeout=15)
-        search_res.raise_for_status()
-        search_data = search_res.json().get('data', [])
-
-        for loc in search_data:
-            if loc.get('state') == 'SA':
-                geohash = loc.get('geohash')
-                log.info(f"BOM: '{search_term}' → geohash={geohash}, name={loc.get('name')}")
-                break
-
-        if geohash == known_geohash and known_geohash:
-            log.info(f"BOM: No live SA result for '{search_term}', using hardcoded geohash={geohash}")
-        elif not geohash:
-            log.warning(f"BOM: No geohash resolved for '{search_term}' — skipping")
-            return None
+        # ── Step 1: resolve geohash ──────────────────────────────
+        # Always prefer the known geohash (verified per-station) to avoid the
+        # search API returning a generic/different location.
+        if known_geohash:
+            geohash = known_geohash
+            log.info(f"BOM: '{search_term}' → using verified geohash={geohash}")
+        else:
+            search_url = (
+                f"https://api.weather.bom.gov.au/v1/locations"
+                f"?search={requests.utils.quote(search_term)}"
+            )
+            search_res = requests.get(search_url, headers=api_headers, timeout=15)
+            search_res.raise_for_status()
+            search_data = search_res.json().get('data', [])
+            geohash = None
+            for loc in search_data:
+                if loc.get('state') == 'SA':
+                    geohash = loc.get('geohash')
+                    log.info(f"BOM: '{search_term}' → geohash={geohash}, name={loc.get('name')}")
+                    break
+            if not geohash:
+                log.warning(f"BOM: No geohash resolved for '{search_term}' — skipping")
+                return None
 
         # ── Step 2: daily forecast ─────────────────────────────────
         fc_url = f"https://api.weather.bom.gov.au/v1/locations/{geohash}/forecasts/daily"
@@ -250,6 +257,12 @@ def fetch_bom_forecast(search_term: str, known_geohash: str | None = None) -> di
         amount_info = rain_info.get('amount', {})
 
         max_temp = today_data.get('temp_max')
+        log.info(
+            f"BOM RAW (geohash={geohash}): "
+            f"temp_max={max_temp}  temp_min={today_data.get('temp_min')}  "
+            f"rain.chance={rain_info.get('chance')}  "
+            f"rain.amount={amount_info}"
+        )
         if max_temp is None:
             log.warning(f"BOM: Null max_temp for geohash={geohash}")
             return None
