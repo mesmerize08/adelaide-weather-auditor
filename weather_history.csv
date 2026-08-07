@@ -1347,3 +1347,4 @@ Date,Station,Source,Forecast_Min_Temp,Forecast_Max_Temp,Forecast_Rain_Prob,Forec
 2026-08-07,Mt Lofty,Open-Meteo,5.3,13.9,91.0,1.1,1.1,,,
 2026-08-07,Mt Lofty,BOM,7.0,14.0,60.0,0.0,1.0,,,
 2026-08-07,Mt Lofty,Weatherzone,6.5,14.0,90.0,5.0,10.0,,,
+2026-08-07,Airport,Open-Meteo,9.6,18.0,91.0,1.9,1.9,,,
