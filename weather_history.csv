@@ -1375,12 +1375,21 @@ Date,Station,Source,Forecast_Min_Temp,Forecast_Max_Temp,Forecast_Rain_Prob,Forec
 2026-08-10,Mt Lofty,Open-Meteo,5.1,10.3,100.0,6.8,6.8,5.8,10.4,6.2
 2026-08-10,Mt Lofty,BOM,7.0,9.0,95.0,5.0,8.0,5.8,10.4,6.2
 2026-08-10,Mt Lofty,Weatherzone,7.7,9.2,90.0,1.0,5.0,5.8,10.4,6.2
-2026-08-11,West Terrace,Open-Meteo,10.4,14.5,73.0,6.7,6.7,,,
-2026-08-11,West Terrace,BOM,9.0,16.0,90.0,2.0,3.0,,,
-2026-08-11,West Terrace,Weatherzone,9.0,16.0,80.0,1.0,5.0,,,
+2026-08-11,West Terrace,Open-Meteo,10.4,14.5,73.0,6.7,6.7,11.0,15.4,6.2
+2026-08-11,West Terrace,BOM,9.0,16.0,90.0,2.0,3.0,11.0,15.4,6.2
+2026-08-11,West Terrace,Weatherzone,9.0,16.0,80.0,1.0,5.0,11.0,15.4,6.2
 2026-08-11,Airport,Open-Meteo,10.6,14.7,78.0,6.7,6.7,,,
 2026-08-11,Airport,BOM,8.0,16.0,90.0,2.0,4.0,,,
 2026-08-11,Airport,Weatherzone,8.0,16.0,70.0,1.0,5.0,,,
 2026-08-11,Mt Lofty,Open-Meteo,5.3,10.1,73.0,4.6,4.6,,,
 2026-08-11,Mt Lofty,BOM,6.0,10.0,90.0,3.0,6.0,,,
 2026-08-11,Mt Lofty,Weatherzone,5.9,10.3,90.0,1.0,5.0,,,
+2026-08-12,West Terrace,Open-Meteo,11.0,14.1,100.0,3.2,3.2,,,
+2026-08-12,West Terrace,BOM,9.0,15.0,95.0,2.0,3.0,,,
+2026-08-12,West Terrace,Weatherzone,9.0,15.0,80.0,0.0,1.0,,,
+2026-08-12,Airport,Open-Meteo,11.3,14.4,100.0,3.2,3.2,,,
+2026-08-12,Airport,BOM,8.0,15.0,90.0,1.0,3.0,,,
+2026-08-12,Airport,Weatherzone,8.0,15.0,70.0,0.0,1.0,,,
+2026-08-12,Mt Lofty,Open-Meteo,5.3,10.1,100.0,7.3,7.3,,,
+2026-08-12,Mt Lofty,BOM,5.0,9.0,90.0,3.0,5.0,,,
+2026-08-12,Mt Lofty,Weatherzone,6.0,9.0,80.0,1.0,5.0,,,
