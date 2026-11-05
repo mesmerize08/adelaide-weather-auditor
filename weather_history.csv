@@ -2139,9 +2139,9 @@ Date,Station,Source,Forecast_Min_Temp,Forecast_Max_Temp,Forecast_Rain_Prob,Forec
 2026-11-03,Mt Lofty,Open-Meteo,6.0,18.3,0.0,0.0,0.0,6.0,18.9,0.0
 2026-11-03,Mt Lofty,BOM,9.0,19.0,5.0,0.0,0.0,6.0,18.9,0.0
 2026-11-03,Mt Lofty,Weatherzone,8.5,19.0,60.0,0.0,1.0,6.0,18.9,0.0
-2026-11-04,West Terrace,Open-Meteo,13.3,17.9,100.0,0.4,0.4,10.1,19.3,0.0
-2026-11-04,West Terrace,BOM,13.0,21.0,70.0,1.0,2.0,10.1,19.3,0.0
-2026-11-04,West Terrace,Weatherzone,13.0,21.0,90.0,0.0,1.0,10.1,19.3,0.0
+2026-11-04,West Terrace,Open-Meteo,13.3,17.9,100.0,0.4,0.4,10.1,19.2,0.0
+2026-11-04,West Terrace,BOM,13.0,21.0,70.0,1.0,2.0,10.1,19.2,0.0
+2026-11-04,West Terrace,Weatherzone,13.0,21.0,90.0,0.0,1.0,10.1,19.2,0.0
 2026-11-04,Airport,Open-Meteo,13.5,18.1,73.0,0.4,0.4,13.2,18.3,0.4
 2026-11-04,Airport,BOM,14.0,20.0,60.0,1.0,2.0,13.2,18.3,0.4
 2026-11-04,Airport,Weatherzone,14.0,20.0,90.0,1.0,5.0,13.2,18.3,0.4
