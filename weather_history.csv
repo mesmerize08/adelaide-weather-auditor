@@ -2286,9 +2286,9 @@ Date,Station,Source,Forecast_Min_Temp,Forecast_Max_Temp,Forecast_Rain_Prob,Forec
 2026-11-20,West Terrace,Open-Meteo,17.3,24.4,80.0,0.0,0.0,16.6,28.1,0.2
 2026-11-20,West Terrace,BOM,17.0,26.0,20.0,0.0,0.0,16.6,28.1,0.2
 2026-11-20,West Terrace,Weatherzone,17.0,26.0,20.0,0.0,1.0,16.6,28.1,0.2
-2026-11-20,Airport,Open-Meteo,17.5,24.6,60.0,0.0,0.0,,,
-2026-11-20,Airport,BOM,18.0,25.0,20.0,0.0,0.0,,,
-2026-11-20,Airport,Weatherzone,18.0,25.0,40.0,0.0,1.0,,,
+2026-11-20,Airport,Open-Meteo,17.5,24.6,60.0,0.0,0.0,17.5,24.4,0.0
+2026-11-20,Airport,BOM,18.0,25.0,20.0,0.0,0.0,17.5,24.4,0.0
+2026-11-20,Airport,Weatherzone,18.0,25.0,40.0,0.0,1.0,17.5,24.4,0.0
 2026-11-20,Mt Lofty,Open-Meteo,11.9,20.6,80.0,1.1,1.1,11.3,20.8,1.3
 2026-11-20,Mt Lofty,BOM,14.0,21.0,20.0,0.0,0.0,11.3,20.8,1.3
 2026-11-20,Mt Lofty,Weatherzone,14.5,20.2,40.0,0.0,1.0,11.3,20.8,1.3
